@@ -85,7 +85,7 @@ export function NoteEditor({
 
   return (
     <form action={formAction} className="space-y-5">
-      {state.error ? <p className="field-error">{state.error}</p> : null}
+      {state?.error ? <p className="field-error">{state.error}</p> : null}
       <input type="hidden" name="templateId" value={values.templateId} />
 
       <div className="card grid gap-4 sm:grid-cols-2">
