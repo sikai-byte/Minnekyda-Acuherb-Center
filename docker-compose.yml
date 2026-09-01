@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: minnekyda-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: minnekyda
+    ports:
+      - '55433:5432'
+    volumes:
+      - minnekyda-db-data:/var/lib/postgresql/data
+
+volumes:
+  minnekyda-db-data:
