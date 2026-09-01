@@ -33,15 +33,33 @@ No patients are seeded; create them via `/patients/new` with synthetic data only
 - `/admin/audit` (ADMIN only; other roles redirect to `/`)
 
 ## Gotchas found while testing
-- **Draft re-save crashes the client.** Clicking "Save draft" while already on `/notes/[id]`
-  triggers `TypeError: Cannot read properties of undefined (reading 'error')` at
-  `src/components/NoteEditor.tsx` (`state.error`). Cause: the server action ends in
-  `redirect()` back to the same route, so `useFormState` hands back `undefined`. The write
-  itself succeeds — reload to confirm persistence. Likely fix is `state?.error`. If you see a
-  blank page after saving a note, this (or a similar same-route-redirect + useFormState
-  pattern) is probably why; reload before declaring data loss.
-- Signing from `/notes/[id]` does NOT crash, because the page switches to the read-only view
-  and the editor unmounts.
+- **`useFormState` + same-route `redirect()` returns `undefined` state.** Server actions here
+  end in `redirect('/notes/'+id)` — redirecting back to the *same* route makes `useFormState`
+  hand back `undefined`, so any `state.error` read crashes with
+  `TypeError: Cannot read properties of undefined (reading 'error')` and blanks the page.
+  Always read it as `state?.error`. This bit `NoteEditor.tsx` once (fixed in 437bd50); if you
+  see a blank page or that TypeError right after a save, suspect this pattern anywhere a
+  form's action redirects to its own route. The DB write still succeeds — reload before
+  declaring data loss.
+- Signing from `/notes/[id]` does NOT hit that path, because the page switches to the
+  read-only view and the editor unmounts. So a happy-path "create → sign" test will NOT catch
+  a draft→draft re-save regression. Always click "Save draft" **twice on an existing**
+  `/notes/[id]` draft when regression-testing the note editor.
+- **Forcing the server-side note validation error is not possible via the date field.** The
+  visit date input is `required` (`NoteEditor.tsx` ~line 100) and is `type="date"`, so an
+  empty or partially-cleared date is blocked by the browser and the action never runs. The
+  reliable way to make `updateNote` return `{ error }` and prove the error banner renders:
+  open the same draft in two tabs, click "Sign and lock" in tab B, then click "Save draft" in
+  the stale tab A — you get the inline red banner
+  "Signed notes cannot be edited. Create an amendment instead."
+- Clearing a `type="date"` input needs each segment cleared: click it, then
+  `Delete`/`Right`/`Delete`/`Right`/`Delete`. To retype, click the field, press `Left` twice
+  to reach the month segment, then type `MMDDYYYY`.
+- Scrolling a long note form: put the cursor in the page margin (e.g. x≈80), not over a
+  textarea, or the scroll goes to the textarea instead of the page.
+- Dev-only noise: a React warning "Cannot update a component (`HotReload`) while rendering a
+  different component (`NoteEditor`)" appears only after Fast Refresh rebuilds. Hard-reload
+  (ctrl+shift+r) before judging console cleanliness.
 - Signature canvas: drive it with `mouse_move` → `left_mouse_down` (no coordinate arg) →
   several `mouse_move` → `left_mouse_up`. Passing a coordinate to `left_mouse_down` is
   rejected by the computer tool.
