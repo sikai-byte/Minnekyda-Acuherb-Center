@@ -1,36 +1,25 @@
 import { cookies } from 'next/headers';
-import { getIronSession, type SessionOptions } from 'iron-session';
-import type { Role } from '@prisma/client';
+import { getIronSession, type IronSession } from 'iron-session';
+import {
+  kioskSessionOptions,
+  sessionOptions,
+  type AppSession,
+  type KioskSession,
+} from './session-options';
 
-export type SessionUser = {
-  id: string;
-  email: string;
-  name: string;
-  role: Role;
-};
+export type { AppSession, KioskSession, SessionUser } from './session-options';
+export {
+  KIOSK_COOKIE,
+  MFA_PENDING_TTL_MS,
+  SESSION_COOKIE,
+  kioskSessionOptions,
+  sessionOptions,
+} from './session-options';
 
-export type AppSession = {
-  user?: SessionUser;
-};
+export async function getSession(): Promise<IronSession<AppSession>> {
+  return getIronSession<AppSession>(cookies(), sessionOptions());
+}
 
-const SESSION_TTL_SECONDS = 60 * 60 * 8;
-
-export const sessionOptions: SessionOptions = {
-  password: process.env.SESSION_SECRET ?? '',
-  cookieName: 'minnekyda_session',
-  ttl: SESSION_TTL_SECONDS,
-  cookieOptions: {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.SECURE_COOKIES === 'true',
-    maxAge: SESSION_TTL_SECONDS,
-  },
-};
-
-export async function getSession(): Promise<AppSession & { save: () => Promise<void>; destroy: () => void }> {
-  const secret = process.env.SESSION_SECRET ?? '';
-  if (secret.length < 32) {
-    throw new Error('SESSION_SECRET must be set to at least 32 characters');
-  }
-  return getIronSession<AppSession>(cookies(), sessionOptions);
+export async function getKioskSession(): Promise<IronSession<KioskSession>> {
+  return getIronSession<KioskSession>(cookies(), kioskSessionOptions());
 }

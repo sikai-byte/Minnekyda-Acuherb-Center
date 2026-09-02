@@ -1,9 +1,8 @@
 'use client';
 
 import { useCallback, useMemo, useState, useTransition } from 'react';
-import Link from 'next/link';
 import { SignaturePad } from '@/components/SignaturePad';
-import { saveIntake } from '@/lib/actions/intake';
+import { exitKiosk, saveIntake } from '@/lib/actions/intake';
 import type { IntakeAnswers, IntakeField, IntakeSchema, SignatureValue } from '@/lib/intake/types';
 import { isCheckboxGridValue } from '@/lib/intake/types';
 
@@ -76,9 +75,11 @@ export function IntakeWizard({
         <p className="mt-2 text-clay-600">
           Your intake form has been submitted. Please hand the iPad back to the front desk.
         </p>
-        <Link href="/kiosk" className="btn-primary mt-6">
-          Done
-        </Link>
+        <form action={exitKiosk} className="mt-6">
+          <button type="submit" className="btn-primary">
+            Done
+          </button>
+        </form>
       </div>
     );
   }

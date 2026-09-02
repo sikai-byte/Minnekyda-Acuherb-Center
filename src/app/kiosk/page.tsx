@@ -30,8 +30,9 @@ export default async function KioskPage({ searchParams }: { searchParams: { q?: 
     <AppShell>
       <h1 className="text-2xl font-semibold tracking-tight">Hand the iPad to a patient</h1>
       <p className="mt-1 text-sm text-clay-600">
-        Find the patient, start their intake, then hand over the iPad. The form locks itself on submit
-        and returns here — no chart data is reachable from the intake screen.
+        Find the patient, then start their intake. Starting it signs you out <em>on this device</em> and
+        locks it to that one form, so nothing else in the chart is reachable while the patient holds it.
+        Sign back in when they hand it back.
       </p>
 
       <form className="mt-6 flex gap-2" action="/kiosk">

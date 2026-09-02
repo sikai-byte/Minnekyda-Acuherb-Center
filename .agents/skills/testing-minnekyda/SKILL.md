@@ -17,7 +17,15 @@ npm run dev                   # http://localhost:3000
 `.env` needs `SESSION_SECRET` (blueprint's `initialize` generates it) and `DATABASE_URL`
 pointing at port 55433.
 
-## Logins (seeded, password `minnekyda-dev`)
+## Logins (seeded, password `Minnekyda-dev-1`)
+Sign-in is three steps now: password → authenticator enrolment (`/login/mfa/setup`, scan or take
+the printed secret) → forced password change (`/account/password`). Generate TOTP codes in the
+test script with `otpauth` (already a dependency) from the secret shown on the setup page, or from
+`User.mfaSecret` in the database. Recovery codes are shown once after enrolment.
+
+Starting an intake signs staff out on that device by design: the kiosk holds a token scoped to one
+submission, so after finishing an intake you must sign in again to reach any chart.
+
 - `admin@minnekyda.test` (ADMIN) — only role that can open `/admin/audit`
 - `practitioner@minnekyda.test` (PRACTITIONER) — clinical notes
 - `frontdesk@minnekyda.test` (FRONT_DESK) — no notes access

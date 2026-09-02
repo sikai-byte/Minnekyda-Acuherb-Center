@@ -1,23 +1,31 @@
 import { notFound, redirect } from 'next/navigation';
 import { IntakeWizard } from '@/components/intake/IntakeWizard';
+import { KioskDone } from '@/components/intake/KioskDone';
 import { prisma } from '@/lib/db';
-import { requireUser } from '@/lib/auth';
+import { requireIntakeAccess } from '@/lib/auth';
 import { patientName } from '@/lib/format';
 import type { IntakeAnswers, IntakeSchema, SignatureValue } from '@/lib/intake/types';
 
 export const dynamic = 'force-dynamic';
 
-/// Kiosk screen handed to the patient: intentionally rendered without the staff nav so
-/// there is no path from the iPad into any other patient's chart.
+/// Kiosk screen handed to the patient. The device carries a submission-scoped kiosk token
+/// rather than a staff session (see `startIntake`), and `src/middleware.ts` refuses every
+/// other route for that token — so the address bar is not a way into another chart.
 export default async function IntakePage({ params }: { params: { id: string } }) {
-  await requireUser();
+  const access = await requireIntakeAccess(params.id);
 
   const submission = await prisma.intakeSubmission.findUnique({
     where: { id: params.id },
     include: { form: true, patient: true },
   });
   if (!submission) notFound();
-  if (submission.status === 'SUBMITTED') redirect(`/intake/${submission.id}/view`);
+
+  if (submission.status === 'SUBMITTED') {
+    /// Staff reviewing paperwork go to the read-only copy; a patient reloading the iPad
+    /// after submitting sees the hand-back screen instead of the chart.
+    if (access.kind === 'staff') redirect(`/intake/${submission.id}/view`);
+    return <KioskDone />;
+  }
 
   return (
     <div className="min-h-screen px-4 py-8">

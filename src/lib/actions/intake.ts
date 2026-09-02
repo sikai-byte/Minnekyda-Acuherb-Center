@@ -4,8 +4,10 @@ import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
-import { requireUser } from '@/lib/auth';
+import { requireIntakeAccess, requireUser } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { getKioskSession, getSession } from '@/lib/session';
+import { kioskPath } from '@/lib/kiosk';
 import type { IntakeSchema, SignatureValue } from '@/lib/intake/types';
 
 /// Answers are stored as an opaque JSON blob keyed by field. We validate the shape
@@ -44,7 +46,32 @@ export async function startIntake(patientId: string): Promise<void> {
     patientId,
   });
 
-  redirect(`/intake/${submission.id}`);
+  /// Handing the iPad to the patient: the staff session is destroyed on this device and
+  /// replaced by a token that can only reach this one submission, so a patient with the
+  /// address bar cannot reach another patient's chart. Staff must sign in again after.
+  const staffSession = await getSession();
+  staffSession.destroy();
+
+  const kiosk = await getKioskSession();
+  kiosk.submissionId = submission.id;
+  kiosk.patientId = patientId;
+  await kiosk.save();
+
+  redirect(kioskPath(submission.id));
+}
+
+/// Ends kiosk mode on the device. Staff have to authenticate again to get back in, which is
+/// the point: the iPad is never a shortcut into the chart system.
+export async function exitKiosk(): Promise<void> {
+  const kiosk = await getKioskSession();
+  const submissionId = kiosk.submissionId;
+  kiosk.destroy();
+  await recordAudit({
+    action: 'exit_kiosk',
+    entity: 'IntakeSubmission',
+    entityId: submissionId ?? null,
+  });
+  redirect('/login');
 }
 
 export type SaveIntakeResult = { ok: boolean; error?: string };
@@ -56,6 +83,8 @@ export async function saveIntake(
   answers: unknown,
   submit: boolean,
 ): Promise<SaveIntakeResult> {
+  await requireIntakeAccess(submissionId);
+
   const parsed = answersSchema.safeParse(answers);
   if (!parsed.success) return { ok: false, error: 'Some answers could not be saved' };
 

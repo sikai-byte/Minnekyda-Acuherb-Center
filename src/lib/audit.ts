@@ -29,6 +29,12 @@ export async function recordAudit(input: AuditInput): Promise<void> {
       },
     });
   } catch (error) {
-    console.error('audit log write failed', error);
+    /// Only the action and the error text: a raw error object can echo the row that failed
+    /// to write, which would put PHI in the server log.
+    console.error('audit log write failed', {
+      action: input.action,
+      entity: input.entity,
+      error: error instanceof Error ? error.message : 'unknown',
+    });
   }
 }
