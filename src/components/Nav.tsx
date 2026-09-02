@@ -25,9 +25,14 @@ export function Nav({ user }: { user: SessionUser }) {
             iPad intake
           </Link>
           {user.role === 'ADMIN' ? (
-            <Link href="/admin/audit" className="btn-ghost">
-              Audit log
-            </Link>
+            <>
+              <Link href="/admin/staff" className="btn-ghost">
+                Staff
+              </Link>
+              <Link href="/admin/audit" className="btn-ghost">
+                Audit log
+              </Link>
+            </>
           ) : null}
         </nav>
         <div className="ml-auto flex items-center gap-3 text-sm">

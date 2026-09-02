@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getIronSession } from 'iron-session';
+import { idleExpired, shouldRefreshIdle } from '@/lib/idle';
 import { kioskAllowsPath, kioskPath } from '@/lib/kiosk';
 import { patientAllowsPath } from '@/lib/portalScope';
 import {
@@ -71,6 +72,19 @@ export async function middleware(request: NextRequest) {
   const session = await getIronSession<AppSession>(request, response, sessionOptions());
   if (!session.user) {
     return NextResponse.redirect(new URL('/login', request.url), { headers: response.headers });
+  }
+
+  /// A browser left signed in at the front desk stops being a signed-in browser.
+  const now = Date.now();
+  if (idleExpired(session.lastSeenAt, now)) {
+    session.destroy();
+    const url = new URL('/login', request.url);
+    url.searchParams.set('reason', 'idle');
+    return NextResponse.redirect(url, { headers: response.headers });
+  }
+  if (shouldRefreshIdle(session.lastSeenAt, now)) {
+    session.lastSeenAt = now;
+    await session.save();
   }
 
   /// Page guards already bounce a PATIENT session off every staff route; this stops the
