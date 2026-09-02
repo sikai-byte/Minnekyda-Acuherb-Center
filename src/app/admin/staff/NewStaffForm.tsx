@@ -10,9 +10,37 @@ export function NewStaffForm() {
 
   if (!open) {
     return (
-      <button type="button" className="btn-primary" onClick={() => setOpen(true)}>
-        Add a staff member
-      </button>
+      <div className="space-y-3">
+        {state.temporaryPassword ? (
+          <div className="rounded border border-moss-300 bg-moss-50 p-4">
+            <p className="text-sm font-medium text-moss-800">
+              One-time password — read it to them now
+            </p>
+            <p className="mt-1 font-mono text-lg">{state.temporaryPassword}</p>
+            <p className="mt-1 text-sm text-clay-600">
+              It is not shown again. They must change it and set up an authenticator app the
+              first time they sign in.
+            </p>
+            <button
+              type="button"
+              className="btn-ghost mt-3"
+              onClick={() => setState({})}
+            >
+              Done
+            </button>
+          </div>
+        ) : null}
+        <button
+          type="button"
+          className="btn-primary"
+          onClick={() => {
+            setState({});
+            setOpen(true);
+          }}
+        >
+          Add a staff member
+        </button>
+      </div>
     );
   }
 
