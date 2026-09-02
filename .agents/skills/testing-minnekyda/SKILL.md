@@ -76,20 +76,35 @@ collapsible groups of chip pickers + sliders + one optional "Add detail" textare
 Selections live in `ClinicalNote.fieldsJson.structured`; the server ALWAYS recomposes the 8
 text columns from that structure on every save (`composeNoteText`).
 - Consequences to test for: **any prose in a text column that has no matching structured/bare
-  control is silently destroyed on the first save.** There is no bare control targeting
-  `tcmDiagnosis`, so legacy prose in that column is lost. When testing migrations of this
-  editor, always seed a DRAFT with distinct strings in *all* text columns, open it, then check
-  the DB after one "Save draft":
+  control risks being silently destroyed on the first save.** Historically `tcmDiagnosis` had
+  no bare control and legacy prose in it was blanked; since dc3ab39 a bare `diagnosisOther`
+  control ("Add diagnosis detail") exists and `composeNoteText` only returns
+  `COMPOSED_TEXT_FIELDS` (fields that actually have a bare control), so an uncovered column is
+  omitted from the Prisma update rather than blanked. If a new text column is ever added
+  without a bare control, re-run this check. When testing migrations of this
+  editor, always seed a DRAFT with distinct strings in *all* text columns (and
+  `fieldsJson='{}'`), open it, confirm each string appears in an "Add detail" box AND that the
+  "Note preview" renders a section for every column, then check the DB after one "Save draft"
+  (and a second one, since the re-save path differs):
   ```bash
   docker exec minnekyda-db psql -U postgres -d minnekyda -tAc \
     "select \"tcmDiagnosis\", \"fieldsJson\"::text from \"ClinicalNote\" where id='<id>';"
   ```
-- Sliders default to "not recorded" (`—`); you must click "Record <label>" before the slider
-  has a value. Drag with `left_click_drag` on the track — verify the numeric readout changes.
+- Sliders default to "not recorded" (readout `—`, grey track, caption "Not recorded — drag the
+  slider to set a value."). Since dc3ab39 there is no "Record <label>" button: a single
+  press-drag-release on the track records the value. `left_click_drag` sometimes does not
+  register on range inputs — prefer an explicit held gesture: `mouse_move` to the thumb,
+  `left_mouse_down` (NO coordinate argument — it is rejected), several `mouse_move`s along the
+  track, then `left_mouse_up`. The "Not recorded" link clears it back to `—`.
 - Do NOT use `ctrl+Home`/`Home` to scroll while a range input has focus: the key goes to the
   slider and silently sets it to its minimum. Scroll with mouse `scroll` actions only.
-- The sticky "Save draft / Sign and lock" bar overlays ~90px at the bottom of the viewport and
-  can hide "Record …" buttons / chips; scroll 1-2 extra clicks before clicking near the bottom.
+- The sticky "Save draft / Sign and lock" bar overlays ~90px at the bottom of the viewport, so
+  content can be visually covered mid-scroll; since dc3ab39 the form has `pb-24` and open
+  groups `pb-20`, so everything can be scrolled clear of it. Still scroll 1-2 extra clicks
+  before clicking near the bottom of the viewport.
+- Groups open independently (multiple at once) and expanding one smooth-scrolls its header to
+  the top of the viewport — after tapping a group header, re-screenshot before computing click
+  coordinates, because the page will have jumped.
 - Templates are chips; `applyTemplate` only fills controls whose value is `undefined`, so to
   test the merge, set a value that differs from the preset first and confirm it survives.
 - "Note preview" (collapsible, near the bottom) shows exactly what will be stored — the
