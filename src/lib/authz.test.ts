@@ -10,7 +10,7 @@ const SRC = path.join(__dirname, '..');
 const APP = path.join(SRC, 'app');
 const ACTIONS = path.join(SRC, 'lib', 'actions');
 
-const GUARDS = /require(User|Role|IntakeAccess|UserPendingPasswordChange)\s*\(/;
+const GUARDS = /require(User|Role|IntakeAccess|UserPendingPasswordChange|Patient)\s*\(/;
 
 /// Only these may render without a session, and each is either a sign-in step or a
 /// pre-authentication screen that reads no patient data.
@@ -57,6 +57,39 @@ describe('deny-by-default authorization', () => {
       /// `exitKiosk` only tears the kiosk token down; it reads nothing.
       if (name === 'exitKiosk') continue;
       expect(body, name).toMatch(GUARDS);
+    }
+  });
+
+  /// The portal is the one place a non-staff session can read data, so it must never be
+  /// guarded by the staff helper: `requirePatient` is what pins the query to one patient.
+  const portalFiles = [
+    ...walk(path.join(APP, 'portal')),
+    path.join(ACTIONS, 'portal.ts'),
+  ].filter((file) => /\.tsx?$/.test(file));
+
+  it.each(portalFiles)('%s is scoped to the signed-in patient', (file) => {
+    const source = readFileSync(file, 'utf8');
+    if (/'use client'/.test(source)) return;
+    expect(source).toMatch(/requirePatient\s*\(/);
+    expect(source).not.toMatch(/requireUser\s*\(/);
+  });
+
+  /// Note text is released through the clinic's records process, never through the portal.
+  const NOTE_TEXT_FIELDS = [
+    'subjective',
+    'objective',
+    'assessment',
+    'plan',
+    'tcmDiagnosis',
+    'chiefComplaint',
+    'herbs',
+    'points',
+  ];
+
+  it.each(portalFiles)('%s exposes no clinical note text', (file) => {
+    const source = readFileSync(file, 'utf8');
+    for (const field of NOTE_TEXT_FIELDS) {
+      expect(source, field).not.toMatch(new RegExp(`\\b${field}\\b`));
     }
   });
 

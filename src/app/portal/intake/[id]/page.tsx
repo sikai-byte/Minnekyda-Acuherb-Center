@@ -1,48 +1,47 @@
 import Link from 'next/link';
 import { notFound } from 'next/navigation';
+import { PortalShell } from '@/components/portal/PortalShell';
 import { SubmittedIntake } from '@/components/intake/SubmittedIntake';
 import { prisma } from '@/lib/db';
-import { requireUser } from '@/lib/auth';
+import { requirePatient } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
-import { formatDateTime, patientName } from '@/lib/format';
+import { formatDateTime } from '@/lib/format';
 import type { IntakeAnswers, IntakeSchema, SignatureValue } from '@/lib/intake/types';
 
 export const dynamic = 'force-dynamic';
 
-export default async function IntakeViewPage({ params }: { params: { id: string } }) {
-  const user = await requireUser();
-  const submission = await prisma.intakeSubmission.findUnique({
-    where: { id: params.id },
+export default async function PortalIntakePage({ params }: { params: { id: string } }) {
+  const { user, patientId } = await requirePatient();
+
+  /// The patient id comes from the session and is part of the query, so another patient's
+  /// submission id simply does not resolve.
+  const submission = await prisma.intakeSubmission.findFirst({
+    where: { id: params.id, patientId, status: 'SUBMITTED' },
     include: { form: true, patient: true },
   });
   if (!submission) notFound();
 
   await recordAudit({
     userId: user.id,
-    action: 'view_intake',
+    action: 'portal_view_intake',
     entity: 'IntakeSubmission',
     entityId: submission.id,
-    patientId: submission.patientId,
+    patientId,
   });
 
   const schema = submission.form.schemaJson as unknown as IntakeSchema;
 
   return (
-    <div className="mx-auto max-w-3xl px-4 py-8">
-      <div className="no-print mb-6 flex items-center justify-between">
-        <Link href={`/patients/${submission.patientId}`} className="text-sm text-clay-600 hover:underline">
-          ← {patientName(submission.patient)}
+    <PortalShell name={submission.patient.firstName}>
+      <div className="no-print mb-6">
+        <Link href="/portal" className="text-sm text-clay-600 hover:underline">
+          ← My records
         </Link>
-        <p className="text-sm text-clay-500">Print with your browser to file or share this intake.</p>
       </div>
-
       <header className="mb-6">
         <h1 className="text-2xl font-semibold tracking-tight">{schema.title}</h1>
         <p className="mt-1 text-sm text-clay-600">
-          {patientName(submission.patient)} · form v{submission.form.version} ·{' '}
-          {submission.status === 'SUBMITTED'
-            ? `submitted ${formatDateTime(submission.submittedAt)}`
-            : 'in progress'}
+          Completed {formatDateTime(submission.submittedAt)} · form v{submission.form.version}
         </p>
       </header>
 
@@ -51,6 +50,6 @@ export default async function IntakeViewPage({ params }: { params: { id: string 
         answers={submission.answersJson as IntakeAnswers}
         signatures={submission.signatures as Record<string, SignatureValue>}
       />
-    </div>
+    </PortalShell>
   );
 }

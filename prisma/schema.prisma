@@ -11,6 +11,9 @@ enum Role {
   ADMIN
   PRACTITIONER
   FRONT_DESK
+  /// A patient's own portal login. Always bound to exactly one `Patient` through
+  /// `User.patientId`, and never granted anything outside `/portal`.
+  PATIENT
 }
 
 enum Sex {
@@ -61,12 +64,16 @@ model User {
   mfaRecoveryCodes String[] @default([])
   /// Set on seeded and admin-reset accounts so the first login must choose a new password.
   mustChangePassword Boolean @default(false)
+  /// Set only on PATIENT accounts, and it is the sole source of the patient identity the
+  /// portal reads: no portal query ever takes a patient id from the request.
+  patientId      String?   @unique
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
   notes          ClinicalNote[] @relation("NoteAuthor")
   startedIntakes IntakeSubmission[] @relation("IntakeStartedBy")
   auditLogs      AuditLog[]
+  patient        Patient?  @relation(fields: [patientId], references: [id], onDelete: Cascade)
 }
 
 model Patient {
@@ -91,6 +98,7 @@ model Patient {
 
   intakes            IntakeSubmission[]
   notes              ClinicalNote[]
+  portalAccount      User?
 
   @@index([lastName, firstName])
 }

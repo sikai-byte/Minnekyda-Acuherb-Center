@@ -6,6 +6,8 @@ const ROLE_LABELS: Record<SessionUser['role'], string> = {
   ADMIN: 'Admin',
   PRACTITIONER: 'Practitioner',
   FRONT_DESK: 'Front desk',
+  /// Patient sessions never render this nav; they are confined to the portal shell.
+  PATIENT: 'Patient',
 };
 
 export function Nav({ user }: { user: SessionUser }) {

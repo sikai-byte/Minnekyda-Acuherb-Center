@@ -12,6 +12,8 @@ export type SessionUser = {
   /// Mirrors `User.mustChangePassword` so every request can bounce the user to the password
   /// screen without an extra query.
   mustChangePassword?: boolean;
+  /// Set only for PATIENT sessions; the portal reads the patient's identity from here.
+  patientId?: string;
 };
 
 export type AppSession = {

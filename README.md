@@ -40,6 +40,9 @@ enrolment and a password change before anything else is reachable:
 | `practitioner@minnekyda.test` | PRACTITIONER | charts, intakes, clinical notes |
 | `frontdesk@minnekyda.test` | FRONT_DESK | demographics and intake paperwork only |
 
+Patient portal logins are not seeded: create a patient, add an email, then use the "Patient
+portal" card on their chart to issue one.
+
 ## Access control
 
 - **Deny by default.** `src/middleware.ts` authenticates every route except the sign-in screens;
@@ -56,6 +59,25 @@ enrolment and a password change before anything else is reachable:
   pruned by the application.
 - Security headers (CSP with per-request nonce, HSTS, `X-Frame-Options`, `Referrer-Policy`,
   `Permissions-Policy`, `Cache-Control: no-store`) are set in the middleware.
+
+### Patient portal
+
+- A `PATIENT` account is bound to exactly one chart through `User.patientId`, and that column is
+  the portal's only source of patient identity: no portal query takes an id from the URL, so a
+  patient cannot ask for someone else's record. Another patient's submission id simply 404s.
+- `requirePatient` guards the portal; `requireUser` — which every staff page and staff action
+  uses — bounces a `PATIENT` session back to `/portal`, and the middleware refuses any path
+  outside `/portal` and `/account/password` for it before the request reaches a page.
+- Patients see their submitted intake paperwork, their visit dates and who they saw, and can
+  correct their own contact and emergency details. **Clinical note content is never shown**; the
+  portal queries select no note text at all, and `authz.test.ts` fails the build if a note text
+  field is even referenced under `src/app/portal`.
+- Staff issue access from the chart ("Patient portal" card): the patient's email becomes the
+  username and a one-time password is displayed once, on screen, with `mustChangePassword` set.
+  Turning access off deactivates the login and keeps its audit history.
+- Patient logins are password-only — staff MFA is mandatory, but requiring an authenticator app
+  of every patient would push them back to phoning the front desk. Revisit if the portal ever
+  carries note content.
 
 Known gap: patient search passes the query in the URL (`/kiosk?q=…`), so a patient name can reach
 an upstream access log. Move search to POST before hosting real PHI.
