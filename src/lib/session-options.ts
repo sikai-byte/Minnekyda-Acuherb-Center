@@ -18,6 +18,8 @@ export type SessionUser = {
 
 export type AppSession = {
   user?: SessionUser;
+  /// Last request this session made, used for the idle timeout in the middleware.
+  lastSeenAt?: number;
   /// Set after a correct password but before the second factor is verified. Carries no
   /// authority: nothing except the MFA screens may read it.
   pendingMfa?: { userId: string; startedAt: number };

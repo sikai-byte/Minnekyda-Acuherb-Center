@@ -22,6 +22,7 @@ import {
   hashRecoveryCodes,
   verifyTotp,
 } from '@/lib/mfa';
+import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/secretBox';
 
 const loginSchema = z.object({
   email: z.string().email('Enter a valid email'),
@@ -110,6 +111,7 @@ async function completeLogin(user: {
     mustChangePassword: user.mustChangePassword,
     patientId: user.patientId ?? undefined,
   };
+  session.lastSeenAt = Date.now();
   await session.save();
 
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
@@ -135,7 +137,13 @@ export async function verifyMfa(_prev: FormState, formData: FormData): Promise<F
   }
 
   const code = String(formData.get('code') ?? '');
-  if (verifyTotp(user.mfaSecret, code)) {
+  if (verifyTotp(decryptSecret(user.mfaSecret), code)) {
+    if (!isEncrypted(user.mfaSecret)) {
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { mfaSecret: encryptSecret(user.mfaSecret) },
+      });
+    }
     await recordAttempt({ email: user.email, ip, success: true, reason: 'totp' });
     await completeLogin(user);
   }
@@ -168,10 +176,13 @@ export async function beginMfaEnrollment(): Promise<{ secret: string; email: str
   if (!user) return null;
   if (user.mfaEnabledAt) return null;
 
-  const secret = user.mfaSecret ?? generateSecret();
-  if (!user.mfaSecret) {
-    await prisma.user.update({ where: { id: user.id }, data: { mfaSecret: secret } });
-  }
+  if (user.mfaSecret) return { secret: decryptSecret(user.mfaSecret), email: user.email };
+
+  const secret = generateSecret();
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { mfaSecret: encryptSecret(secret) },
+  });
   return { secret, email: user.email };
 }
 
@@ -182,7 +193,7 @@ export async function confirmMfaEnrollment(
   const user = await pendingUser();
   if (!user || !user.mfaSecret) redirect('/login');
 
-  if (!verifyTotp(user.mfaSecret, String(formData.get('code') ?? ''))) {
+  if (!verifyTotp(decryptSecret(user.mfaSecret), String(formData.get('code') ?? ''))) {
     await recordAttempt({
       email: user.email,
       ip: requestIp(),

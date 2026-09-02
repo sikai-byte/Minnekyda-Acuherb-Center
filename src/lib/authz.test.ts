@@ -93,6 +93,14 @@ describe('deny-by-default authorization', () => {
     }
   });
 
+  /// Patient names must not travel in a URL, where they would land in every access log
+  /// between the browser and us. Search is a posted server action instead.
+  it.each(pages)('%s takes no search term from the query string', (file) => {
+    const source = readFileSync(file, 'utf8');
+    expect(source).not.toMatch(/searchParams\.q\b/);
+    expect(source).not.toMatch(/\bq\?:\s*string/);
+  });
+
   it('keeps the middleware allow-list to sign-in screens only', () => {
     const source = readFileSync(path.join(SRC, 'middleware.ts'), 'utf8');
     const list = source.match(/const PUBLIC_PATHS = \[([^\]]*)\]/)?.[1] ?? '';

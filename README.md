@@ -57,8 +57,22 @@ portal" card on their chart to issue one.
 - **Brute force.** Failures are counted per account (5) and per source address (20) over 15
   minutes and recorded in `LoginAttempt` with a reason code. The log is evidence and is never
   pruned by the application.
+- **Idle sessions die.** On top of the 8-hour absolute session, the middleware ends a session
+  after 30 minutes without a request and sends the browser to `/login?reason=idle`, because the
+  front desk machine is a shared surface. The cookie is rewritten at most once a minute.
+- **Patient names never travel in a URL.** Search posts the term to a server action
+  (`searchPatients`) and renders results in place, so no name reaches an upstream access log;
+  `authz.test.ts` fails the build if a page starts reading a `q` query parameter again.
 - Security headers (CSP with per-request nonce, HSTS, `X-Frame-Options`, `Referrer-Policy`,
   `Permissions-Policy`, `Cache-Control: no-store`) are set in the middleware.
+
+### Staff accounts
+
+`/admin/staff` (ADMIN only) is where staff accounts are managed without touching the database:
+add an account with a one-time password, reset a password, reset an authenticator after a lost
+phone, change a role, and deactivate a leaver. Deactivation keeps the account, its notes and its
+audit history. An admin cannot deactivate or demote themselves, and the last active admin cannot
+be removed. Patient portal accounts are not listed here.
 
 ### Patient portal
 
@@ -79,9 +93,6 @@ portal" card on their chart to issue one.
   of every patient would push them back to phoning the front desk. Revisit if the portal ever
   carries note content.
 
-Known gap: patient search passes the query in the URL (`/kiosk?q=…`), so a patient name can reach
-an upstream access log. Move search to POST before hosting real PHI.
-
 ## Handling PHI
 
 - Clinical notes are readable only by `ADMIN` and `PRACTITIONER`; front desk staff can register
@@ -94,6 +105,11 @@ an upstream access log. Move search to POST before hosting real PHI.
   revision never rewrites history.
 - Error screens, the audit-write failure path, and the login-attempt failure path log codes and
   messages only — never patient data, note text, or intake answers.
+- TOTP secrets are encrypted at rest with AES-256-GCM (`src/lib/secretBox.ts`) so a database
+  dump is not a working second factor. The data key comes from `MFA_ENCRYPTION_KEY`, which in
+  production holds a key decrypted from Cloud KMS at boot; the stored format is versioned for
+  rotation, and a secret written before encryption existed still verifies and is rewritten
+  encrypted on next use.
 - Do not run production with real patient data until the hosting BAA is in place. Railway is for
   a synthetic-data pilot only; Google Cloud (Cloud Run + Cloud SQL) is the production target.
 

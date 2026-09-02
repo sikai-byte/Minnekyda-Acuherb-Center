@@ -1,11 +1,11 @@
 'use server';
 
-import crypto from 'node:crypto';
 import { revalidatePath } from 'next/cache';
 import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { temporaryPassword } from '@/lib/tempPassword';
 
 export type PortalAccessState = {
   error?: string;
@@ -14,28 +14,6 @@ export type PortalAccessState = {
   temporaryPassword?: string;
   message?: string;
 };
-
-const WORDS = [
-  'cedar',
-  'willow',
-  'ginger',
-  'lotus',
-  'birch',
-  'peony',
-  'quince',
-  'sage',
-  'juniper',
-  'mulberry',
-  'poplar',
-  'aster',
-];
-
-/// Meets the password policy on its own, and is replaced on the patient's first sign-in.
-function temporaryPassword(): string {
-  const pick = () => WORDS[crypto.randomInt(WORDS.length)];
-  const word = pick();
-  return `${word[0].toUpperCase()}${word.slice(1)}-${pick()}-${crypto.randomInt(10, 100)}`;
-}
 
 async function patientForAccess(patientId: string) {
   return prisma.patient.findUnique({

@@ -1,42 +1,21 @@
 import Link from 'next/link';
 import { AppShell } from '@/components/AppShell';
+import { PatientSearch } from '@/components/PatientSearch';
 import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
-import { recordAudit } from '@/lib/audit';
 import { age, formatDate, patientName } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
 
-export default async function PatientsPage({
-  searchParams,
-}: {
-  searchParams: { q?: string };
-}) {
-  const user = await requireUser();
-  const query = searchParams.q?.trim() ?? '';
+export default async function PatientsPage() {
+  await requireUser();
 
   const patients = await prisma.patient.findMany({
-    where: {
-      archivedAt: null,
-      ...(query
-        ? {
-            OR: [
-              { firstName: { contains: query, mode: 'insensitive' as const } },
-              { lastName: { contains: query, mode: 'insensitive' as const } },
-              { phone: { contains: query } },
-              { email: { contains: query, mode: 'insensitive' as const } },
-            ],
-          }
-        : {}),
-    },
+    where: { archivedAt: null },
     orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
     take: 100,
     include: { _count: { select: { notes: true, intakes: true } } },
   });
-
-  if (query) {
-    await recordAudit({ userId: user.id, action: 'search_patients', entity: 'Patient', detail: { query } });
-  }
 
   return (
     <AppShell>
@@ -47,22 +26,14 @@ export default async function PatientsPage({
         </Link>
       </div>
 
-      <form className="mb-6 flex gap-2" action="/patients">
-        <input
-          name="q"
-          defaultValue={query}
-          placeholder="Search by name, phone, or email"
-          className="input max-w-sm"
-        />
-        <button type="submit" className="btn-secondary">
-          Search
-        </button>
-      </form>
+      <PatientSearch mode="chart" placeholder="Search by name, phone, or email" />
+
+      <h2 className="mb-3 mt-8 text-sm font-semibold uppercase tracking-wide text-clay-500">
+        All patients
+      </h2>
 
       {patients.length === 0 ? (
-        <p className="text-sm text-clay-600">
-          {query ? `No patients match “${query}”.` : 'No patients yet — add your first one.'}
-        </p>
+        <p className="text-sm text-clay-600">No patients yet — add your first one.</p>
       ) : (
         <div className="card overflow-x-auto p-0">
           <table className="w-full text-sm">
