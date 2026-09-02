@@ -33,7 +33,7 @@ export async function startIntake(patientId: string): Promise<void> {
   if (!form) throw new Error('No active intake form is configured');
 
   const submission = await prisma.intakeSubmission.create({
-    data: { patientId, intakeFormId: form.id },
+    data: { patientId, intakeFormId: form.id, startedById: user.id },
   });
 
   await recordAudit({
@@ -97,12 +97,19 @@ export async function saveIntake(
   });
 
   if (submit) {
+    /// The patient submits from the kiosk with no session of their own, so the
+    /// submission is attributed to the staff member who started the intake.
     await recordAudit({
+      userId: submission.startedById,
       action: 'submit_intake',
       entity: 'IntakeSubmission',
       entityId: submissionId,
       patientId: submission.patientId,
-      detail: { formSlug: submission.form.slug, formVersion: submission.form.version },
+      detail: {
+        formSlug: submission.form.slug,
+        formVersion: submission.form.version,
+        submittedBy: 'patient on kiosk',
+      },
     });
     revalidatePath(`/patients/${submission.patientId}`);
   }

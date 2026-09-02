@@ -43,6 +43,7 @@ model User {
   updatedAt      DateTime  @updatedAt
 
   notes          ClinicalNote[] @relation("NoteAuthor")
+  startedIntakes IntakeSubmission[] @relation("IntakeStartedBy")
   auditLogs      AuditLog[]
 }
 
@@ -92,6 +93,9 @@ model IntakeSubmission {
   id            String       @id @default(cuid())
   patientId     String
   intakeFormId  String
+  /// Staff member who handed the iPad to the patient. The patient submits the form
+  /// themselves, so this is who the submission is attributed to in the audit log.
+  startedById   String?
   status        IntakeStatus @default(IN_PROGRESS)
   answersJson   Json         @default("{}")
   signatures    Json         @default("{}")
@@ -101,6 +105,7 @@ model IntakeSubmission {
 
   patient       Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
   form          IntakeForm   @relation(fields: [intakeFormId], references: [id])
+  startedBy     User?        @relation("IntakeStartedBy", fields: [startedById], references: [id])
 
   @@index([patientId, createdAt])
 }
