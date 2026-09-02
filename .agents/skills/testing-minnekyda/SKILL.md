@@ -70,5 +70,30 @@ No patients are seeded; create them via `/patients/new` with synthetic data only
 - Typing into a freshly clicked textarea can drop the first character; re-read the field
   value (or the DOM) after typing test data.
 
+## Tap-first (chip/slider) note editor
+The visit note editor is structured (`src/lib/notes/structure.ts` + `src/components/NoteEditor.tsx`):
+collapsible groups of chip pickers + sliders + one optional "Add detail" textarea per group.
+Selections live in `ClinicalNote.fieldsJson.structured`; the server ALWAYS recomposes the 8
+text columns from that structure on every save (`composeNoteText`).
+- Consequences to test for: **any prose in a text column that has no matching structured/bare
+  control is silently destroyed on the first save.** There is no bare control targeting
+  `tcmDiagnosis`, so legacy prose in that column is lost. When testing migrations of this
+  editor, always seed a DRAFT with distinct strings in *all* text columns, open it, then check
+  the DB after one "Save draft":
+  ```bash
+  docker exec minnekyda-db psql -U postgres -d minnekyda -tAc \
+    "select \"tcmDiagnosis\", \"fieldsJson\"::text from \"ClinicalNote\" where id='<id>';"
+  ```
+- Sliders default to "not recorded" (`—`); you must click "Record <label>" before the slider
+  has a value. Drag with `left_click_drag` on the track — verify the numeric readout changes.
+- Do NOT use `ctrl+Home`/`Home` to scroll while a range input has focus: the key goes to the
+  slider and silently sets it to its minimum. Scroll with mouse `scroll` actions only.
+- The sticky "Save draft / Sign and lock" bar overlays ~90px at the bottom of the viewport and
+  can hide "Record …" buttons / chips; scroll 1-2 extra clicks before clicking near the bottom.
+- Templates are chips; `applyTemplate` only fills controls whose value is `undefined`, so to
+  test the merge, set a value that differs from the preset first and confirm it survives.
+- "Note preview" (collapsible, near the bottom) shows exactly what will be stored — the
+  cheapest way to diff editor state against the signed read-only view.
+
 ## Devin Secrets Needed
 None — all local, `SESSION_SECRET` is generated locally.

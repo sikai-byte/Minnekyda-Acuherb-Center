@@ -122,7 +122,7 @@ function ControlField({
             step={step}
             value={shown}
             onChange={(event) => onChange(Number(event.target.value))}
-            className={`h-11 flex-1 accent-moss-600 ${active ? '' : 'opacity-50'}`}
+            className={`h-11 flex-1 ${active ? 'accent-moss-600' : 'accent-clay-300'}`}
             aria-label={control.label}
           />
           <span
@@ -138,13 +138,7 @@ function ControlField({
           <span>{control.ends[1]}</span>
         </div>
         {active ? null : (
-          <button
-            type="button"
-            onClick={() => onChange(shown)}
-            className="mt-2 min-h-[44px] rounded-full border border-clay-200 px-4 text-sm text-clay-700"
-          >
-            Record {control.label.toLowerCase()}
-          </button>
+          <p className="mt-1 text-xs text-clay-500">Not recorded — drag the slider to set a value.</p>
         )}
       </div>
     );
@@ -207,7 +201,7 @@ export function NoteEditor({
   const [visitDate, setVisitDate] = useState(initialVisitDate);
   const [templateId, setTemplateId] = useState(initialTemplateId);
   const [structured, setStructured] = useState<StructuredNote>(initialStructured);
-  const [openGroup, setOpenGroup] = useState(NOTE_GROUPS[0].key);
+  const [openGroups, setOpenGroups] = useState<string[]>([NOTE_GROUPS[0].key]);
   const [showPreview, setShowPreview] = useState(false);
 
   const preview = useMemo(() => composeNoteText(structured), [structured]);
@@ -239,13 +233,25 @@ export function NoteEditor({
     });
   };
 
+  /// Groups open independently: a practitioner working through a visit often wants the
+  /// complaint and the treatment side by side.
+  const toggleGroup = (key: string, header: HTMLElement) => {
+    const opening = !openGroups.includes(key);
+    setOpenGroups((previous) =>
+      opening ? [...previous, key] : previous.filter((item) => item !== key),
+    );
+    if (opening) {
+      requestAnimationFrame(() => header.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+    }
+  };
+
   const countFor = (groupKey: string) =>
     NOTE_GROUPS.find((group) => group.key === groupKey)?.controls.filter(
       (control) => structured[control.id] !== undefined,
     ).length ?? 0;
 
   return (
-    <form action={formAction} className="space-y-4 pb-4">
+    <form action={formAction} className="space-y-4 pb-24">
       {state?.error ? <p className="field-error">{state.error}</p> : null}
       <input type="hidden" name="templateId" value={templateId} />
       <input type="hidden" name="structured" value={JSON.stringify(structured)} />
@@ -279,13 +285,13 @@ export function NoteEditor({
       </div>
 
       {NOTE_GROUPS.map((group) => {
-        const open = openGroup === group.key;
+        const open = openGroups.includes(group.key);
         const count = countFor(group.key);
         return (
           <section key={group.key} className="card p-0">
             <button
               type="button"
-              onClick={() => setOpenGroup(open ? '' : group.key)}
+              onClick={(event) => toggleGroup(group.key, event.currentTarget)}
               className="flex min-h-[56px] w-full items-center justify-between gap-3 px-4 text-left"
             >
               <span className="flex items-center gap-2">
@@ -297,7 +303,7 @@ export function NoteEditor({
               <span className="text-clay-400">{open ? '▲' : '▼'}</span>
             </button>
             {open ? (
-              <div className="space-y-5 border-t border-clay-100 px-4 py-4">
+              <div className="space-y-5 border-t border-clay-100 px-4 pb-20 pt-4">
                 {group.hint ? <p className="text-sm text-clay-500">{group.hint}</p> : null}
                 {group.controls.map((control) => (
                   <ControlField

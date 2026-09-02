@@ -346,6 +346,13 @@ export const NOTE_GROUPS: NoteGroup[] = [
         options: ['LU', 'LI', 'ST', 'SP', 'HT', 'SI', 'BL', 'KI', 'PC', 'TH', 'GB', 'LR', 'Du', 'Ren'],
       },
       {
+        type: 'text',
+        id: 'diagnosisOther',
+        label: 'Add diagnosis detail',
+        target: 'tcmDiagnosis',
+        bare: true,
+      },
+      {
         type: 'chips',
         id: 'progress',
         label: 'Progress',
@@ -573,6 +580,12 @@ export const FREE_TEXT_CONTROL_BY_FIELD: Partial<Record<NoteTextField, string>> 
   ),
 ) as Partial<Record<NoteTextField, string>>;
 
+/// A text column with no free-text control cannot be edited or even shown, so writes must
+/// leave it alone rather than overwrite it with composed prose that omits it.
+export const COMPOSED_TEXT_FIELDS: NoteTextField[] = NOTE_TEXT_FIELDS.filter(
+  (field) => FREE_TEXT_CONTROL_BY_FIELD[field] !== undefined,
+);
+
 function renderControl(control: NoteControl, value: ControlValue | undefined): string | null {
   if (value === undefined || value === null) return null;
 
@@ -594,7 +607,7 @@ function renderControl(control: NoteControl, value: ControlValue | undefined): s
 
 /// Renders the tapped selections into the note's text columns, one `Label: values`
 /// line per control, in the order the editor presents them.
-export function composeNoteText(structured: StructuredNote): Record<NoteTextField, string> {
+export function composeNoteText(structured: StructuredNote): Partial<Record<NoteTextField, string>> {
   const lines: Record<NoteTextField, string[]> = {
     chiefComplaint: [],
     subjective: [],
@@ -614,8 +627,8 @@ export function composeNoteText(structured: StructuredNote): Record<NoteTextFiel
   }
 
   return Object.fromEntries(
-    NOTE_TEXT_FIELDS.map((field) => [field, lines[field].join('\n')]),
-  ) as Record<NoteTextField, string>;
+    COMPOSED_TEXT_FIELDS.map((field) => [field, lines[field].join('\n')]),
+  );
 }
 
 /// Rebuilds the editor state for an existing draft. Notes written before the tap-first
