@@ -1,0 +1,114 @@
+---
+name: testing-minnekyda
+description: How to bring up and end-to-end test the Minnekyda Acuherb clinic app (Next.js 14 App Router + Prisma/Postgres + iron-session), including intake wizard, clinical notes, role gating, and audit log.
+---
+
+# Testing the Minnekyda clinic app
+
+## Bring-up
+```bash
+docker compose up -d          # Postgres on localhost:55433 (container: minnekyda-db)
+# If compose errors with 'container name "/minnekyda-db" is already in use':
+docker start minnekyda-db
+npm install                   # if node_modules missing
+npm run db:push && npm run db:seed   # seeds are idempotent upserts
+npm run dev                   # http://localhost:3000
+```
+`.env` needs `SESSION_SECRET` (blueprint's `initialize` generates it) and `DATABASE_URL`
+pointing at port 55433.
+
+## Logins (seeded, password `minnekyda-dev`)
+- `admin@minnekyda.test` (ADMIN) — only role that can open `/admin/audit`
+- `practitioner@minnekyda.test` (PRACTITIONER) — clinical notes
+- `frontdesk@minnekyda.test` (FRONT_DESK) — no notes access
+
+No patients are seeded; create them via `/patients/new` with synthetic data only.
+
+## Route map for a full E2E pass
+- `/patients/new` → chart at `/patients/[id]` (logs `view_chart`)
+- Chart "Start intake" → `/intake/[id]` wizard (16 steps in intake schema v1 — don't hardcode
+  a step count in a plan, read it from "Step X of Y")
+- `/intake/[id]/view` read-only view; submitted intakes redirect `/intake/[id]` → the view
+- `/patients/[id]/notes/new` → `/notes/[id]`
+- `/admin/audit` (ADMIN only; other roles redirect to `/`)
+
+## Gotchas found while testing
+- **`useFormState` + same-route `redirect()` returns `undefined` state.** Server actions here
+  end in `redirect('/notes/'+id)` — redirecting back to the *same* route makes `useFormState`
+  hand back `undefined`, so any `state.error` read crashes with
+  `TypeError: Cannot read properties of undefined (reading 'error')` and blanks the page.
+  Always read it as `state?.error`. This bit `NoteEditor.tsx` once (fixed in 437bd50); if you
+  see a blank page or that TypeError right after a save, suspect this pattern anywhere a
+  form's action redirects to its own route. The DB write still succeeds — reload before
+  declaring data loss.
+- Signing from `/notes/[id]` does NOT hit that path, because the page switches to the
+  read-only view and the editor unmounts. So a happy-path "create → sign" test will NOT catch
+  a draft→draft re-save regression. Always click "Save draft" **twice on an existing**
+  `/notes/[id]` draft when regression-testing the note editor.
+- **Forcing the server-side note validation error is not possible via the date field.** The
+  visit date input is `required` (`NoteEditor.tsx` ~line 100) and is `type="date"`, so an
+  empty or partially-cleared date is blocked by the browser and the action never runs. The
+  reliable way to make `updateNote` return `{ error }` and prove the error banner renders:
+  open the same draft in two tabs, click "Sign and lock" in tab B, then click "Save draft" in
+  the stale tab A — you get the inline red banner
+  "Signed notes cannot be edited. Create an amendment instead."
+- Clearing a `type="date"` input needs each segment cleared: click it, then
+  `Delete`/`Right`/`Delete`/`Right`/`Delete`. To retype, click the field, press `Left` twice
+  to reach the month segment, then type `MMDDYYYY`.
+- Scrolling a long note form: put the cursor in the page margin (e.g. x≈80), not over a
+  textarea, or the scroll goes to the textarea instead of the page.
+- Dev-only noise: a React warning "Cannot update a component (`HotReload`) while rendering a
+  different component (`NoteEditor`)" appears only after Fast Refresh rebuilds. Hard-reload
+  (ctrl+shift+r) before judging console cleanliness.
+- Signature canvas: drive it with `mouse_move` → `left_mouse_down` (no coordinate arg) →
+  several `mouse_move` → `left_mouse_up`. Passing a coordinate to `left_mouse_down` is
+  rejected by the computer tool.
+- Intake submit validation returns a single string `Please complete: <items>`; the missing
+  consent entry reads `<Section title> — agreement`.
+- The dev box clock may be far in the future (e.g. 2026), so ages/dates in the UI look odd.
+  Verify relative correctness, not absolute values.
+- Typing into a freshly clicked textarea can drop the first character; re-read the field
+  value (or the DOM) after typing test data.
+
+## Tap-first (chip/slider) note editor
+The visit note editor is structured (`src/lib/notes/structure.ts` + `src/components/NoteEditor.tsx`):
+collapsible groups of chip pickers + sliders + one optional "Add detail" textarea per group.
+Selections live in `ClinicalNote.fieldsJson.structured`; the server ALWAYS recomposes the 8
+text columns from that structure on every save (`composeNoteText`).
+- Consequences to test for: **any prose in a text column that has no matching structured/bare
+  control risks being silently destroyed on the first save.** Historically `tcmDiagnosis` had
+  no bare control and legacy prose in it was blanked; since dc3ab39 a bare `diagnosisOther`
+  control ("Add diagnosis detail") exists and `composeNoteText` only returns
+  `COMPOSED_TEXT_FIELDS` (fields that actually have a bare control), so an uncovered column is
+  omitted from the Prisma update rather than blanked. If a new text column is ever added
+  without a bare control, re-run this check. When testing migrations of this
+  editor, always seed a DRAFT with distinct strings in *all* text columns (and
+  `fieldsJson='{}'`), open it, confirm each string appears in an "Add detail" box AND that the
+  "Note preview" renders a section for every column, then check the DB after one "Save draft"
+  (and a second one, since the re-save path differs):
+  ```bash
+  docker exec minnekyda-db psql -U postgres -d minnekyda -tAc \
+    "select \"tcmDiagnosis\", \"fieldsJson\"::text from \"ClinicalNote\" where id='<id>';"
+  ```
+- Sliders default to "not recorded" (readout `—`, grey track, caption "Not recorded — drag the
+  slider to set a value."). Since dc3ab39 there is no "Record <label>" button: a single
+  press-drag-release on the track records the value. `left_click_drag` sometimes does not
+  register on range inputs — prefer an explicit held gesture: `mouse_move` to the thumb,
+  `left_mouse_down` (NO coordinate argument — it is rejected), several `mouse_move`s along the
+  track, then `left_mouse_up`. The "Not recorded" link clears it back to `—`.
+- Do NOT use `ctrl+Home`/`Home` to scroll while a range input has focus: the key goes to the
+  slider and silently sets it to its minimum. Scroll with mouse `scroll` actions only.
+- The sticky "Save draft / Sign and lock" bar overlays ~90px at the bottom of the viewport, so
+  content can be visually covered mid-scroll; since dc3ab39 the form has `pb-24` and open
+  groups `pb-20`, so everything can be scrolled clear of it. Still scroll 1-2 extra clicks
+  before clicking near the bottom of the viewport.
+- Groups open independently (multiple at once) and expanding one smooth-scrolls its header to
+  the top of the viewport — after tapping a group header, re-screenshot before computing click
+  coordinates, because the page will have jumped.
+- Templates are chips; `applyTemplate` only fills controls whose value is `undefined`, so to
+  test the merge, set a value that differs from the preset first and confirm it survives.
+- "Note preview" (collapsible, near the bottom) shows exactly what will be stored — the
+  cheapest way to diff editor state against the signed read-only view.
+
+## Devin Secrets Needed
+None — all local, `SESSION_SECRET` is generated locally.

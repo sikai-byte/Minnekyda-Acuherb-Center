@@ -1,0 +1,173 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  PRACTITIONER
+  FRONT_DESK
+}
+
+enum Sex {
+  FEMALE
+  MALE
+  OTHER
+  UNDISCLOSED
+}
+
+enum IntakeStatus {
+  IN_PROGRESS
+  SUBMITTED
+}
+
+enum NoteStatus {
+  DRAFT
+  SIGNED
+}
+
+model User {
+  id             String    @id @default(cuid())
+  email          String    @unique
+  name           String
+  passwordHash   String
+  role           Role      @default(FRONT_DESK)
+  credentials    String?
+  active         Boolean   @default(true)
+  lastLoginAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  notes          ClinicalNote[] @relation("NoteAuthor")
+  startedIntakes IntakeSubmission[] @relation("IntakeStartedBy")
+  auditLogs      AuditLog[]
+}
+
+model Patient {
+  id                 String    @id @default(cuid())
+  firstName          String
+  lastName           String
+  dateOfBirth        DateTime?
+  sex                Sex       @default(UNDISCLOSED)
+  phone              String?
+  email              String?
+  streetAddress      String?
+  city               String?
+  state              String?
+  zip                String?
+  occupation         String?
+  primaryPhysician   String?
+  emergencyName      String?
+  emergencyPhone     String?
+  archivedAt         DateTime?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
+
+  intakes            IntakeSubmission[]
+  notes              ClinicalNote[]
+
+  @@index([lastName, firstName])
+}
+
+/// A versioned intake questionnaire. Editing a live form creates a new version
+/// so that historical submissions always render against the schema they were signed under.
+model IntakeForm {
+  id          String   @id @default(cuid())
+  slug        String
+  version     Int
+  title       String
+  schemaJson  Json
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  submissions IntakeSubmission[]
+
+  @@unique([slug, version])
+}
+
+model IntakeSubmission {
+  id            String       @id @default(cuid())
+  patientId     String
+  intakeFormId  String
+  /// Staff member who handed the iPad to the patient. The patient submits the form
+  /// themselves, so this is who the submission is attributed to in the audit log.
+  startedById   String?
+  status        IntakeStatus @default(IN_PROGRESS)
+  answersJson   Json         @default("{}")
+  signatures    Json         @default("{}")
+  submittedAt   DateTime?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  patient       Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  form          IntakeForm   @relation(fields: [intakeFormId], references: [id])
+  startedBy     User?        @relation("IntakeStartedBy", fields: [startedById], references: [id])
+
+  @@index([patientId, createdAt])
+}
+
+model NoteTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  fieldsJson  Json
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  notes       ClinicalNote[]
+}
+
+/// Clinical notes are immutable once signed. An amendment is a new row pointing at
+/// the note it supersedes via `amendsId`, so the full history is always recoverable.
+model ClinicalNote {
+  id             String       @id @default(cuid())
+  patientId      String
+  authorId       String
+  templateId     String?
+  visitDate      DateTime
+  status         NoteStatus   @default(DRAFT)
+  chiefComplaint String?
+  subjective     String?
+  objective      String?
+  tcmDiagnosis   String?
+  assessment     String?
+  plan           String?
+  pointsUsed     String?
+  herbFormula    String?
+  fieldsJson     Json         @default("{}")
+  signedAt       DateTime?
+  amendsId       String?      @unique
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  patient        Patient      @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  author         User         @relation("NoteAuthor", fields: [authorId], references: [id])
+  template       NoteTemplate? @relation(fields: [templateId], references: [id])
+  amends         ClinicalNote? @relation("Amendment", fields: [amendsId], references: [id])
+  amendedBy      ClinicalNote? @relation("Amendment")
+
+  @@index([patientId, visitDate])
+}
+
+/// Every read and write of patient data is recorded. Required for HIPAA audit controls.
+model AuditLog {
+  id         String   @id @default(cuid())
+  userId     String?
+  action     String
+  entity     String
+  entityId   String?
+  patientId  String?
+  detail     Json?
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime @default(now())
+
+  user       User?    @relation(fields: [userId], references: [id])
+
+  @@index([patientId, createdAt])
+  @@index([createdAt])
+}
