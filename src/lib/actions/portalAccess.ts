@@ -1,0 +1,125 @@
+'use server';
+
+import crypto from 'node:crypto';
+import { revalidatePath } from 'next/cache';
+import bcrypt from 'bcryptjs';
+import { prisma } from '@/lib/db';
+import { requireUser } from '@/lib/auth';
+import { recordAudit } from '@/lib/audit';
+
+export type PortalAccessState = {
+  error?: string;
+  /// Shown to staff once, on screen, so they can read it to the patient. It is never
+  /// stored in the clear and never emailed from here.
+  temporaryPassword?: string;
+  message?: string;
+};
+
+const WORDS = [
+  'cedar',
+  'willow',
+  'ginger',
+  'lotus',
+  'birch',
+  'peony',
+  'quince',
+  'sage',
+  'juniper',
+  'mulberry',
+  'poplar',
+  'aster',
+];
+
+/// Meets the password policy on its own, and is replaced on the patient's first sign-in.
+function temporaryPassword(): string {
+  const pick = () => WORDS[crypto.randomInt(WORDS.length)];
+  const word = pick();
+  return `${word[0].toUpperCase()}${word.slice(1)}-${pick()}-${crypto.randomInt(10, 100)}`;
+}
+
+async function patientForAccess(patientId: string) {
+  return prisma.patient.findUnique({
+    where: { id: patientId },
+    include: { portalAccount: { select: { id: true, email: true, active: true } } },
+  });
+}
+
+/// Creates or re-enables a patient's portal login. Staff never choose or see a lasting
+/// password: the temporary one must be changed at first sign-in.
+export async function grantPortalAccess(patientId: string): Promise<PortalAccessState> {
+  const staff = await requireUser();
+  const patient = await patientForAccess(patientId);
+  if (!patient) return { error: 'Patient not found' };
+
+  const email = patient.email?.trim().toLowerCase();
+  if (!email) {
+    return { error: 'Add an email address to this chart first — it is the patient’s username.' };
+  }
+
+  /// A staff address must never be turned into a patient login.
+  const clash = await prisma.user.findUnique({ where: { email } });
+  if (clash && clash.patientId !== patientId) {
+    return { error: 'That email address already has a login here. Use a different address.' };
+  }
+
+  const password = temporaryPassword();
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  await prisma.user.upsert({
+    where: { patientId },
+    create: {
+      email,
+      name: `${patient.firstName} ${patient.lastName}`,
+      passwordHash,
+      role: 'PATIENT',
+      patientId,
+      mustChangePassword: true,
+    },
+    update: {
+      email,
+      passwordHash,
+      role: 'PATIENT',
+      active: true,
+      mustChangePassword: true,
+      /// A patient login carries no second factor, so make sure a re-grant cannot inherit
+      /// stale MFA material.
+      mfaSecret: null,
+      mfaEnabledAt: null,
+      mfaRecoveryCodes: [],
+    },
+  });
+
+  await recordAudit({
+    userId: staff.id,
+    action: patient.portalAccount ? 'portal_access_reset' : 'portal_access_granted',
+    entity: 'Patient',
+    entityId: patientId,
+    patientId,
+  });
+
+  revalidatePath(`/patients/${patientId}`);
+  return { temporaryPassword: password };
+}
+
+export async function revokePortalAccess(patientId: string): Promise<PortalAccessState> {
+  const staff = await requireUser();
+  const patient = await patientForAccess(patientId);
+  if (!patient?.portalAccount) return { error: 'This patient has no portal login' };
+
+  /// Deactivated rather than deleted: the account is referenced by its own audit history.
+  await prisma.user.update({
+    where: { id: patient.portalAccount.id },
+    data: { active: false },
+  });
+
+  await recordAudit({
+    userId: staff.id,
+    action: 'portal_access_revoked',
+    entity: 'Patient',
+    entityId: patientId,
+    patientId,
+  });
+
+  revalidatePath(`/patients/${patientId}`);
+  return { message: 'Portal access turned off' };
+}

@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from 'next/server';
 import { getIronSession } from 'iron-session';
 import { kioskAllowsPath, kioskPath } from '@/lib/kiosk';
+import { patientAllowsPath } from '@/lib/portalScope';
 import {
   kioskSessionOptions,
   sessionOptions,
@@ -70,6 +71,12 @@ export async function middleware(request: NextRequest) {
   const session = await getIronSession<AppSession>(request, response, sessionOptions());
   if (!session.user) {
     return NextResponse.redirect(new URL('/login', request.url), { headers: response.headers });
+  }
+
+  /// Page guards already bounce a PATIENT session off every staff route; this stops the
+  /// request before it reaches one.
+  if (session.user.role === 'PATIENT' && !patientAllowsPath(pathname)) {
+    return NextResponse.redirect(new URL('/portal', request.url), { headers: response.headers });
   }
 
   return response;

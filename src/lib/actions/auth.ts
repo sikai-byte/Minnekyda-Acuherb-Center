@@ -7,6 +7,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { getKioskSession, getSession, MFA_PENDING_TTL_MS } from '@/lib/session';
 import { recordAudit } from '@/lib/audit';
+import { PORTAL_HOME } from '@/lib/auth';
 import {
   isLockedOut,
   LOCKOUT_MESSAGE,
@@ -64,6 +65,14 @@ export async function login(_prev: FormState, formData: FormData): Promise<FormS
   const kiosk = await getKioskSession();
   kiosk.destroy();
 
+  /// Patients sign in with a password alone: the portal exposes nothing but their own
+  /// record, and requiring an authenticator app of every patient would push them back to
+  /// phoning the front desk. Staff MFA stays mandatory.
+  if (user.role === 'PATIENT') {
+    await recordAttempt({ email, ip, success: true, reason: 'patient_password' });
+    await completeLogin(user);
+  }
+
   const session = await getSession();
   session.user = undefined;
   session.pendingMfa = { userId: user.id, startedAt: Date.now() };
@@ -89,6 +98,7 @@ async function completeLogin(user: {
   name: string;
   role: Role;
   mustChangePassword: boolean;
+  patientId: string | null;
 }): Promise<never> {
   const session = await getSession();
   session.pendingMfa = undefined;
@@ -98,13 +108,18 @@ async function completeLogin(user: {
     name: user.name,
     role: user.role,
     mustChangePassword: user.mustChangePassword,
+    patientId: user.patientId ?? undefined,
   };
   await session.save();
 
   await prisma.user.update({ where: { id: user.id }, data: { lastLoginAt: new Date() } });
   await recordAudit({ userId: user.id, action: 'login', entity: 'User', entityId: user.id });
 
-  redirect(user.mustChangePassword ? '/account/password' : '/');
+  redirect(user.mustChangePassword ? '/account/password' : landingPath(user.role));
+}
+
+function landingPath(role: Role): string {
+  return role === 'PATIENT' ? PORTAL_HOME : '/';
 }
 
 /// Second factor for an account that already has MFA in force. Accepts either a TOTP code
@@ -232,7 +247,7 @@ export async function changePassword(_prev: FormState, formData: FormData): Prom
     entityId: user.id,
   });
 
-  redirect('/');
+  redirect(landingPath(sessionUser.role));
 }
 
 export async function logout(): Promise<void> {

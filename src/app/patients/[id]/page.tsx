@@ -2,6 +2,7 @@ import Link from 'next/link';
 import { notFound } from 'next/navigation';
 import { AppShell } from '@/components/AppShell';
 import { StartIntakeButton } from '@/components/StartIntakeButton';
+import { PortalAccessCard } from '@/components/PortalAccessCard';
 import { prisma } from '@/lib/db';
 import { requireUser, canViewClinicalNotes } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
@@ -19,6 +20,7 @@ export default async function PatientChartPage({ params }: { params: { id: strin
         orderBy: [{ visitDate: 'desc' }, { createdAt: 'desc' }],
         include: { author: true, amends: true },
       },
+      portalAccount: { select: { email: true, active: true, lastLoginAt: true } },
     },
   });
   if (!patient) notFound();
@@ -73,10 +75,23 @@ export default async function PatientChartPage({ params }: { params: { id: strin
               {patient.emergencyName ? `${patient.emergencyName} · ${patient.emergencyPhone ?? '—'}` : '—'}
             </Detail>
             <Detail label="Patient since">{formatDate(patient.createdAt)}</Detail>
+            <Detail label="Portal">
+              {patient.portalAccount?.active
+                ? `Active · last signed in ${formatDateTime(patient.portalAccount.lastLoginAt)}`
+                : patient.portalAccount
+                  ? 'Turned off'
+                  : 'No login'}
+            </Detail>
           </dl>
         </section>
 
         <div className="space-y-6 lg:col-span-2">
+          <PortalAccessCard
+            patientId={patient.id}
+            account={patient.portalAccount}
+            patientEmail={patient.email}
+          />
+
           <section className="card">
             <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-clay-500">Intake forms</h2>
             {patient.intakes.length === 0 ? (

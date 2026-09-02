@@ -7,12 +7,28 @@ export async function currentUser(): Promise<SessionUser | null> {
   return session.user ?? null;
 }
 
+/// Every staff page and staff action goes through here, so this is the one place a patient
+/// account has to be turned away: a PATIENT session is bounced to its own portal no matter
+/// which staff route it asks for.
 export async function requireUser(): Promise<SessionUser> {
   const user = await currentUser();
   if (!user) redirect('/login');
   /// A seeded or admin-reset password must be replaced before anything else is reachable.
   if (user.mustChangePassword) redirect('/account/password');
+  if (user.role === 'PATIENT') redirect(PORTAL_HOME);
   return user;
+}
+
+export const PORTAL_HOME = '/portal';
+
+/// The portal's only source of patient identity. The id comes from the session, never from
+/// the URL or a form field, so there is no id for a patient to tamper with.
+export async function requirePatient(): Promise<{ user: SessionUser; patientId: string }> {
+  const user = await currentUser();
+  if (!user) redirect('/login');
+  if (user.mustChangePassword) redirect('/account/password');
+  if (user.role !== 'PATIENT' || !user.patientId) redirect('/');
+  return { user, patientId: user.patientId };
 }
 
 /// For the password screen itself, which must stay reachable while the flag is set.
@@ -49,7 +65,7 @@ export async function intakeAccess(submissionId: string): Promise<IntakeAccess |
     return kiosk.submissionId === submissionId ? { kind: 'kiosk', submissionId } : null;
   }
   const user = await currentUser();
-  return user ? { kind: 'staff', user } : null;
+  return user && user.role !== 'PATIENT' ? { kind: 'staff', user } : null;
 }
 
 export async function requireIntakeAccess(submissionId: string): Promise<IntakeAccess> {
