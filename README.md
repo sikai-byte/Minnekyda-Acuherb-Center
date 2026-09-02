@@ -6,9 +6,11 @@ are still on paper today:
 - **iPad patient intake** — the clinic's paper new-patient packet, digitized field-for-field,
   including clinic policies, the acupuncture informed consent, and the arbitration agreement,
   with on-screen signature capture.
-- **Practitioner visit notes** — template-driven TCM notes (subjective, objective, tongue/pulse,
-  pattern diagnosis, points, herbal formula) that lock on signature and are corrected through
-  amendments rather than edits.
+- **Practitioner visit notes** — tap-first TCM notes: pain and improvement sliders, chip pickers for
+  the ten questions, tongue/pulse, patterns, points and techniques, and plan, with optional free text
+  per section. Selections are stored in `ClinicalNote.fieldsJson` and rendered into the note's text
+  columns by `composeNoteText` (`src/lib/notes/structure.ts`), so charts and print output are
+  unchanged. Notes lock on signature and are corrected through amendments rather than edits.
 
 Scheduling, payments, and reporting are deliberately out of scope for now.
 

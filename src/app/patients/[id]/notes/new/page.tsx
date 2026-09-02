@@ -5,6 +5,7 @@ import { NoteEditor, type NoteTemplateOption } from '@/components/NoteEditor';
 import { prisma } from '@/lib/db';
 import { requireRole, CLINICAL_ROLES } from '@/lib/auth';
 import { createNote } from '@/lib/actions/notes';
+import { templatePresets } from '@/lib/notes/structure';
 import { formatDateInput, patientName } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,7 @@ export default async function NewNotePage({ params }: { params: { id: string } }
     id: template.id,
     name: template.name,
     description: template.description,
-    fields: template.fieldsJson as Record<string, string>,
+    presets: templatePresets(template.fieldsJson),
   }));
 
   return (
@@ -36,18 +37,9 @@ export default async function NewNotePage({ params }: { params: { id: string } }
       <NoteEditor
         action={createNote.bind(null, patient.id)}
         templates={templateOptions}
-        draft={{
-          visitDate: formatDateInput(new Date()),
-          chiefComplaint: '',
-          subjective: '',
-          objective: '',
-          tcmDiagnosis: '',
-          assessment: '',
-          plan: '',
-          pointsUsed: '',
-          herbFormula: '',
-          templateId: '',
-        }}
+        visitDate={formatDateInput(new Date())}
+        templateId=""
+        structured={{}}
       />
     </AppShell>
   );

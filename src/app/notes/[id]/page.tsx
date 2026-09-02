@@ -7,20 +7,15 @@ import { prisma } from '@/lib/db';
 import { requireRole, CLINICAL_ROLES } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
 import { updateNote } from '@/lib/actions/notes';
+import {
+  NOTE_FIELD_LABELS,
+  NOTE_TEXT_FIELDS,
+  structuredFromNote,
+  templatePresets,
+} from '@/lib/notes/structure';
 import { formatDate, formatDateInput, formatDateTime, patientName } from '@/lib/format';
 
 export const dynamic = 'force-dynamic';
-
-const NOTE_SECTIONS: { key: 'chiefComplaint' | 'subjective' | 'objective' | 'tcmDiagnosis' | 'assessment' | 'plan' | 'pointsUsed' | 'herbFormula'; label: string }[] = [
-  { key: 'chiefComplaint', label: 'Chief complaint' },
-  { key: 'subjective', label: 'Subjective' },
-  { key: 'objective', label: 'Objective' },
-  { key: 'tcmDiagnosis', label: 'TCM diagnosis' },
-  { key: 'assessment', label: 'Assessment' },
-  { key: 'plan', label: 'Plan' },
-  { key: 'pointsUsed', label: 'Points and techniques' },
-  { key: 'herbFormula', label: 'Herbal formula' },
-];
 
 export default async function NotePage({ params }: { params: { id: string } }) {
   const user = await requireRole(CLINICAL_ROLES);
@@ -83,7 +78,7 @@ export default async function NotePage({ params }: { params: { id: string } }) {
       id: template.id,
       name: template.name,
       description: template.description,
-      fields: template.fieldsJson as Record<string, string>,
+      presets: templatePresets(template.fieldsJson),
     }));
 
     return (
@@ -92,18 +87,9 @@ export default async function NotePage({ params }: { params: { id: string } }) {
         <NoteEditor
           action={updateNote.bind(null, note.id)}
           templates={templateOptions}
-          draft={{
-            visitDate: formatDateInput(note.visitDate),
-            chiefComplaint: note.chiefComplaint ?? '',
-            subjective: note.subjective ?? '',
-            objective: note.objective ?? '',
-            tcmDiagnosis: note.tcmDiagnosis ?? '',
-            assessment: note.assessment ?? '',
-            plan: note.plan ?? '',
-            pointsUsed: note.pointsUsed ?? '',
-            herbFormula: note.herbFormula ?? '',
-            templateId: note.templateId ?? '',
-          }}
+          visitDate={formatDateInput(note.visitDate)}
+          templateId={note.templateId ?? ''}
+          structured={structuredFromNote(note.fieldsJson, note)}
         />
       </AppShell>
     );
@@ -113,12 +99,14 @@ export default async function NotePage({ params }: { params: { id: string } }) {
     <AppShell>
       {header}
       <article className="card space-y-4">
-        {NOTE_SECTIONS.map((section) => {
-          const value = note[section.key];
+        {NOTE_TEXT_FIELDS.map((field) => {
+          const value = note[field];
           if (!value) return null;
           return (
-            <div key={section.key}>
-              <h2 className="text-xs uppercase tracking-wide text-clay-500">{section.label}</h2>
+            <div key={field}>
+              <h2 className="text-xs uppercase tracking-wide text-clay-500">
+                {NOTE_FIELD_LABELS[field]}
+              </h2>
               <p className="whitespace-pre-line text-clay-800">{value}</p>
             </div>
           );

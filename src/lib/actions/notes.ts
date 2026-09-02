@@ -6,35 +6,56 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requireRole, CLINICAL_ROLES } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { composeNoteText, isStructuredNote, type StructuredNote } from '@/lib/notes/structure';
 
 const noteSchema = z.object({
   visitDate: z.string().min(1, 'Visit date is required'),
-  chiefComplaint: z.string().trim().optional(),
-  subjective: z.string().trim().optional(),
-  objective: z.string().trim().optional(),
-  tcmDiagnosis: z.string().trim().optional(),
-  assessment: z.string().trim().optional(),
-  plan: z.string().trim().optional(),
-  pointsUsed: z.string().trim().optional(),
-  herbFormula: z.string().trim().optional(),
   templateId: z.string().trim().optional(),
+  structured: z.string().optional(),
 });
 
 export type NoteFormState = { error?: string };
 
-function readNoteForm(formData: FormData) {
-  return noteSchema.safeParse({
+type ParsedNote = {
+  visitDate: string;
+  templateId: string;
+  structured: StructuredNote;
+  text: ReturnType<typeof composeNoteText>;
+};
+
+/// The editor posts only the tapped selections; the note's text columns are always
+/// rendered here so the stored prose cannot drift from the structured answers.
+function readNoteForm(formData: FormData): { ok: true; data: ParsedNote } | { ok: false; error: string } {
+  const parsed = noteSchema.safeParse({
     visitDate: formData.get('visitDate') ?? '',
-    chiefComplaint: formData.get('chiefComplaint') ?? '',
-    subjective: formData.get('subjective') ?? '',
-    objective: formData.get('objective') ?? '',
-    tcmDiagnosis: formData.get('tcmDiagnosis') ?? '',
-    assessment: formData.get('assessment') ?? '',
-    plan: formData.get('plan') ?? '',
-    pointsUsed: formData.get('pointsUsed') ?? '',
-    herbFormula: formData.get('herbFormula') ?? '',
     templateId: formData.get('templateId') ?? '',
+    structured: formData.get('structured') ?? '',
   });
+  if (!parsed.success) return { ok: false, error: parsed.error.issues[0].message };
+
+  let structured: StructuredNote = {};
+  if (parsed.data.structured) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(parsed.data.structured);
+    } catch {
+      return { ok: false, error: 'Could not read the note selections. Please try again.' };
+    }
+    if (!isStructuredNote(decoded)) {
+      return { ok: false, error: 'Could not read the note selections. Please try again.' };
+    }
+    structured = decoded;
+  }
+
+  return {
+    ok: true,
+    data: {
+      visitDate: parsed.data.visitDate,
+      templateId: parsed.data.templateId ?? '',
+      structured,
+      text: composeNoteText(structured),
+    },
+  };
 }
 
 export async function createNote(
@@ -44,14 +65,15 @@ export async function createNote(
 ): Promise<NoteFormState> {
   const user = await requireRole(CLINICAL_ROLES);
   const parsed = readNoteForm(formData);
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!parsed.ok) return { error: parsed.error };
 
   const sign = formData.get('intent') === 'sign';
-  const { visitDate, templateId, ...rest } = parsed.data;
+  const { visitDate, templateId, structured, text } = parsed.data;
 
   const note = await prisma.clinicalNote.create({
     data: {
-      ...rest,
+      ...text,
+      fieldsJson: { structured },
       patientId,
       authorId: user.id,
       templateId: templateId || null,
@@ -80,7 +102,7 @@ export async function updateNote(
 ): Promise<NoteFormState> {
   const user = await requireRole(CLINICAL_ROLES);
   const parsed = readNoteForm(formData);
-  if (!parsed.success) return { error: parsed.error.issues[0].message };
+  if (!parsed.ok) return { error: parsed.error };
 
   const existing = await prisma.clinicalNote.findUnique({ where: { id: noteId } });
   if (!existing) return { error: 'Note not found' };
@@ -89,12 +111,13 @@ export async function updateNote(
   }
 
   const sign = formData.get('intent') === 'sign';
-  const { visitDate, templateId, ...rest } = parsed.data;
+  const { visitDate, templateId, structured, text } = parsed.data;
 
   await prisma.clinicalNote.update({
     where: { id: noteId },
     data: {
-      ...rest,
+      ...text,
+      fieldsJson: { structured },
       templateId: templateId || null,
       visitDate: new Date(visitDate),
       status: sign ? 'SIGNED' : 'DRAFT',
@@ -139,6 +162,7 @@ export async function amendNote(noteId: string): Promise<void> {
       plan: original.plan,
       pointsUsed: original.pointsUsed,
       herbFormula: original.herbFormula,
+      fieldsJson: original.fieldsJson ?? undefined,
       amendsId: original.id,
       status: 'DRAFT',
     },

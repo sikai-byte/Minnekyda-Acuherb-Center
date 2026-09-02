@@ -1,50 +1,189 @@
 'use client';
 
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useFormState, useFormStatus } from 'react-dom';
 import type { NoteFormState } from '@/lib/actions/notes';
+import {
+  NOTE_FIELD_LABELS,
+  NOTE_GROUPS,
+  NOTE_TEXT_FIELDS,
+  composeNoteText,
+  type NoteControl,
+  type StructuredNote,
+} from '@/lib/notes/structure';
 
 export type NoteTemplateOption = {
   id: string;
   name: string;
   description: string | null;
-  fields: Record<string, string>;
+  presets: StructuredNote;
 };
-
-export type NoteDraft = {
-  visitDate: string;
-  chiefComplaint: string;
-  subjective: string;
-  objective: string;
-  tcmDiagnosis: string;
-  assessment: string;
-  plan: string;
-  pointsUsed: string;
-  herbFormula: string;
-  templateId: string;
-};
-
-const SECTIONS: { key: keyof NoteDraft; label: string; rows: number; hint?: string }[] = [
-  { key: 'chiefComplaint', label: 'Chief complaint', rows: 2 },
-  { key: 'subjective', label: 'Subjective', rows: 5 },
-  { key: 'objective', label: 'Objective (tongue, pulse, palpation)', rows: 5 },
-  { key: 'tcmDiagnosis', label: 'TCM diagnosis', rows: 2 },
-  { key: 'assessment', label: 'Assessment', rows: 3 },
-  { key: 'plan', label: 'Plan', rows: 3 },
-  { key: 'pointsUsed', label: 'Points and techniques used', rows: 3 },
-  { key: 'herbFormula', label: 'Herbal formula', rows: 3 },
-];
 
 const initialState: NoteFormState = {};
+
+function Chip({
+  label,
+  selected,
+  onClick,
+}: {
+  label: string;
+  selected: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={selected}
+      className={`min-h-[44px] rounded-full border px-4 text-sm transition-colors ${
+        selected
+          ? 'border-moss-600 bg-moss-600 text-white'
+          : 'border-clay-200 bg-white text-clay-700 active:bg-clay-100'
+      }`}
+    >
+      {label}
+    </button>
+  );
+}
+
+function ControlField({
+  control,
+  value,
+  onChange,
+}: {
+  control: NoteControl;
+  value: string[] | number | string | undefined;
+  onChange: (next: string[] | number | string | undefined) => void;
+}) {
+  if (control.type === 'chips') {
+    const selected = Array.isArray(value) ? value : [];
+    const toggle = (option: string) => {
+      if (control.single) {
+        onChange(selected[0] === option ? undefined : [option]);
+        return;
+      }
+      onChange(
+        selected.includes(option)
+          ? selected.filter((item) => item !== option)
+          : [...selected, option],
+      );
+    };
+    return (
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="label">{control.label}</span>
+          {selected.length > 0 ? (
+            <button
+              type="button"
+              onClick={() => onChange(undefined)}
+              className="text-xs text-clay-500 underline"
+            >
+              Clear
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {control.options.map((option) => (
+            <Chip
+              key={option}
+              label={option}
+              selected={selected.includes(option)}
+              onClick={() => toggle(option)}
+            />
+          ))}
+        </div>
+      </div>
+    );
+  }
+
+  if (control.type === 'scale') {
+    const active = typeof value === 'number';
+    const step = control.step ?? 1;
+    const shown = active ? (value as number) : Math.round((control.min + control.max) / 2 / step) * step;
+    return (
+      <div>
+        <div className="flex items-baseline justify-between gap-2">
+          <span className="label">{control.label}</span>
+          {active ? (
+            <button
+              type="button"
+              onClick={() => onChange(undefined)}
+              className="text-xs text-clay-500 underline"
+            >
+              Not recorded
+            </button>
+          ) : null}
+        </div>
+        <div className="mt-2 flex items-center gap-4">
+          <input
+            type="range"
+            min={control.min}
+            max={control.max}
+            step={step}
+            value={shown}
+            onChange={(event) => onChange(Number(event.target.value))}
+            className={`h-11 flex-1 accent-moss-600 ${active ? '' : 'opacity-50'}`}
+            aria-label={control.label}
+          />
+          <span
+            className={`w-20 shrink-0 text-right text-lg font-semibold tabular-nums ${
+              active ? 'text-clay-800' : 'text-clay-400'
+            }`}
+          >
+            {active ? `${shown}${control.suffix}` : '—'}
+          </span>
+        </div>
+        <div className="mt-1 flex justify-between text-xs text-clay-500">
+          <span>{control.ends[0]}</span>
+          <span>{control.ends[1]}</span>
+        </div>
+        {active ? null : (
+          <button
+            type="button"
+            onClick={() => onChange(shown)}
+            className="mt-2 min-h-[44px] rounded-full border border-clay-200 px-4 text-sm text-clay-700"
+          >
+            Record {control.label.toLowerCase()}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <label className="block">
+      <span className="label">{control.label}</span>
+      <textarea
+        rows={2}
+        className="input"
+        placeholder={control.placeholder ?? 'Optional — only if the taps above miss something'}
+        value={typeof value === 'string' ? value : ''}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    </label>
+  );
+}
 
 function Buttons() {
   const { pending } = useFormStatus();
   return (
-    <div className="flex flex-wrap gap-2">
-      <button type="submit" name="intent" value="save" className="btn-secondary" disabled={pending}>
+    <div className="sticky bottom-0 -mx-4 flex flex-wrap gap-3 border-t border-clay-200 bg-linen-50/95 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-xl sm:border sm:px-4">
+      <button
+        type="submit"
+        name="intent"
+        value="save"
+        className="btn-secondary min-h-[48px] flex-1"
+        disabled={pending}
+      >
         {pending ? 'Saving…' : 'Save draft'}
       </button>
-      <button type="submit" name="intent" value="sign" className="btn-primary" disabled={pending}>
+      <button
+        type="submit"
+        name="intent"
+        value="sign"
+        className="btn-primary min-h-[48px] flex-1"
+        disabled={pending}
+      >
         Sign and lock
       </button>
     </div>
@@ -54,39 +193,62 @@ function Buttons() {
 export function NoteEditor({
   action,
   templates,
-  draft,
+  visitDate: initialVisitDate,
+  templateId: initialTemplateId,
+  structured: initialStructured,
 }: {
   action: (prev: NoteFormState, formData: FormData) => Promise<NoteFormState>;
   templates: NoteTemplateOption[];
-  draft: NoteDraft;
+  visitDate: string;
+  templateId: string;
+  structured: StructuredNote;
 }) {
   const [state, formAction] = useFormState(action, initialState);
-  const [values, setValues] = useState<NoteDraft>(draft);
+  const [visitDate, setVisitDate] = useState(initialVisitDate);
+  const [templateId, setTemplateId] = useState(initialTemplateId);
+  const [structured, setStructured] = useState<StructuredNote>(initialStructured);
+  const [openGroup, setOpenGroup] = useState(NOTE_GROUPS[0].key);
+  const [showPreview, setShowPreview] = useState(false);
 
-  /// Applying a template only fills sections the practitioner has left empty, so
-  /// switching templates mid-note never destroys typed text.
-  const applyTemplate = (templateId: string) => {
-    const template = templates.find((item) => item.id === templateId);
-    setValues((previous) => {
-      if (!template) return { ...previous, templateId: '' };
-      const next = { ...previous, templateId };
-      for (const [key, text] of Object.entries(template.fields)) {
-        const field = key as keyof NoteDraft;
-        if (field in next && !String(next[field] ?? '').trim()) {
-          next[field] = text;
-        }
+  const preview = useMemo(() => composeNoteText(structured), [structured]);
+
+  const setControl = (id: string, next: string[] | number | string | undefined) =>
+    setStructured((previous) => {
+      const copy = { ...previous };
+      const empty =
+        next === undefined ||
+        (Array.isArray(next) && next.length === 0) ||
+        (typeof next === 'string' && !next.trim());
+      if (empty) delete copy[id];
+      else copy[id] = next;
+      return copy;
+    });
+
+  /// Applying a template only fills controls left untouched, so switching templates
+  /// mid-note never clears what the practitioner already tapped.
+  const applyTemplate = (id: string) => {
+    setTemplateId(id);
+    const template = templates.find((item) => item.id === id);
+    if (!template) return;
+    setStructured((previous) => {
+      const next = { ...previous };
+      for (const [controlId, value] of Object.entries(template.presets)) {
+        if (next[controlId] === undefined) next[controlId] = value;
       }
       return next;
     });
   };
 
-  const update = (key: keyof NoteDraft, value: string) =>
-    setValues((previous) => ({ ...previous, [key]: value }));
+  const countFor = (groupKey: string) =>
+    NOTE_GROUPS.find((group) => group.key === groupKey)?.controls.filter(
+      (control) => structured[control.id] !== undefined,
+    ).length ?? 0;
 
   return (
-    <form action={formAction} className="space-y-5">
+    <form action={formAction} className="space-y-4 pb-4">
       {state?.error ? <p className="field-error">{state.error}</p> : null}
-      <input type="hidden" name="templateId" value={values.templateId} />
+      <input type="hidden" name="templateId" value={templateId} />
+      <input type="hidden" name="structured" value={JSON.stringify(structured)} />
 
       <div className="card grid gap-4 sm:grid-cols-2">
         <label className="block">
@@ -94,43 +256,90 @@ export function NoteEditor({
           <input
             type="date"
             name="visitDate"
-            className="input"
-            value={values.visitDate}
-            onChange={(event) => update('visitDate', event.target.value)}
+            className="input min-h-[48px]"
+            value={visitDate}
+            onChange={(event) => setVisitDate(event.target.value)}
             required
           />
         </label>
-        <label className="block">
+        <div>
           <span className="label">Template</span>
-          <select
-            className="input"
-            value={values.templateId}
-            onChange={(event) => applyTemplate(event.target.value)}
-          >
-            <option value="">No template</option>
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Chip label="No template" selected={!templateId} onClick={() => setTemplateId('')} />
             {templates.map((template) => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-              </option>
+              <Chip
+                key={template.id}
+                label={template.name}
+                selected={templateId === template.id}
+                onClick={() => applyTemplate(template.id)}
+              />
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
       </div>
 
-      <div className="card space-y-4">
-        {SECTIONS.map((section) => (
-          <label key={section.key} className="block">
-            <span className="label">{section.label}</span>
-            <textarea
-              name={section.key}
-              rows={section.rows}
-              className="input"
-              value={String(values[section.key] ?? '')}
-              onChange={(event) => update(section.key, event.target.value)}
-            />
-          </label>
-        ))}
-      </div>
+      {NOTE_GROUPS.map((group) => {
+        const open = openGroup === group.key;
+        const count = countFor(group.key);
+        return (
+          <section key={group.key} className="card p-0">
+            <button
+              type="button"
+              onClick={() => setOpenGroup(open ? '' : group.key)}
+              className="flex min-h-[56px] w-full items-center justify-between gap-3 px-4 text-left"
+            >
+              <span className="flex items-center gap-2">
+                <span className="text-base font-semibold text-clay-800">{group.title}</span>
+                {count > 0 ? (
+                  <span className="badge bg-moss-100 text-moss-700">{count}</span>
+                ) : null}
+              </span>
+              <span className="text-clay-400">{open ? '▲' : '▼'}</span>
+            </button>
+            {open ? (
+              <div className="space-y-5 border-t border-clay-100 px-4 py-4">
+                {group.hint ? <p className="text-sm text-clay-500">{group.hint}</p> : null}
+                {group.controls.map((control) => (
+                  <ControlField
+                    key={control.id}
+                    control={control}
+                    value={structured[control.id]}
+                    onChange={(next) => setControl(control.id, next)}
+                  />
+                ))}
+              </div>
+            ) : null}
+          </section>
+        );
+      })}
+
+      <section className="card p-0">
+        <button
+          type="button"
+          onClick={() => setShowPreview((previous) => !previous)}
+          className="flex min-h-[56px] w-full items-center justify-between px-4 text-left"
+        >
+          <span className="text-base font-semibold text-clay-800">Note preview</span>
+          <span className="text-clay-400">{showPreview ? '▲' : '▼'}</span>
+        </button>
+        {showPreview ? (
+          <div className="space-y-3 border-t border-clay-100 px-4 py-4">
+            {NOTE_TEXT_FIELDS.map((field) =>
+              preview[field] ? (
+                <div key={field}>
+                  <h3 className="text-xs uppercase tracking-wide text-clay-500">
+                    {NOTE_FIELD_LABELS[field]}
+                  </h3>
+                  <p className="whitespace-pre-line text-clay-800">{preview[field]}</p>
+                </div>
+              ) : null,
+            )}
+            {Object.values(preview).every((value) => !value) ? (
+              <p className="text-sm text-clay-500">Nothing recorded yet.</p>
+            ) : null}
+          </div>
+        ) : null}
+      </section>
 
       <Buttons />
       <p className="text-xs text-clay-500">

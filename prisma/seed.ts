@@ -1,6 +1,7 @@
 import { PrismaClient, type Prisma } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import { minnekydaIntakeV1 } from '../src/lib/intake/minnekydaIntakeV1';
+import type { StructuredNote } from '../src/lib/notes/structure';
 
 const prisma = new PrismaClient();
 
@@ -17,49 +18,52 @@ const STAFF = [
   { email: 'frontdesk@minnekyda.test', name: 'Front Desk', role: 'FRONT_DESK' as const, credentials: null },
 ];
 
-const TEMPLATES: { name: string; description: string; fields: Record<string, string> }[] = [
+/// Templates preselect the taps a visit type usually needs, so a routine note is a few
+/// adjustments rather than a blank form.
+const TEMPLATES: { name: string; description: string; presets: StructuredNote }[] = [
   {
     name: 'Acupuncture follow-up',
     description: 'Routine return visit for an established treatment plan.',
-    fields: {
-      subjective:
-        'Since last visit:\nPain level (0-10):\nSleep:\nDigestion:\nEnergy:\nResponse to last treatment:',
-      objective: 'Tongue:\nPulse:\nPalpation:\nAffect / general appearance:',
-      plan: 'Treatment frequency:\nHome care:\nNext visit:',
-      pointsUsed: 'Points:\nNeedle retention:\nAdjunct (moxa / cupping / e-stim / gua sha):',
+    presets: {
+      sinceLastVisit: ['Better'],
+      technique: ['Even'],
+      retention: 20,
+      tolerance: ['Tolerated well'],
+      frequency: ['1x per week'],
+      followUp: ['1 week'],
     },
   },
   {
     name: 'New patient evaluation',
     description: 'First visit; pairs with the completed intake form.',
-    fields: {
-      subjective:
-        'Chief complaint history (onset, duration, aggravating / relieving):\nTen questions — sleep, appetite, digestion, bowel / bladder, thirst, temperature, sweat, pain, energy, emotions:\nPast medical history reviewed from intake:',
-      objective: 'Tongue (body, coat, moisture):\nPulse (left / right, all positions):\nPalpation / range of motion:\nVitals:',
-      tcmDiagnosis: 'Pattern differentiation:\nZang-fu:\nChannels involved:',
-      assessment: 'Western correlate:\nPrognosis:',
-      plan: 'Treatment plan and frequency:\nLifestyle and dietary guidance:\nRe-evaluation point:',
+    presets: {
+      sinceLastVisit: ['First visit'],
+      progress: ['New presentation'],
+      technique: ['Even'],
+      retention: 25,
+      frequency: ['2x per week'],
+      followUp: ['1 week'],
     },
   },
   {
     name: 'Herbal consultation',
     description: 'Formula prescription or adjustment.',
-    fields: {
-      subjective: 'Response to current formula:\nDigestive tolerance:\nSymptom changes:',
-      tcmDiagnosis: 'Pattern:',
-      herbFormula:
-        'Base formula:\nModifications:\nForm (granule / raw / patent):\nDosage and duration:\nCautions, interactions, pregnancy status:',
-      plan: 'Refill plan:\nFollow-up:',
+    presets: {
+      formulaForm: ['Granules'],
+      dosing: ['2x daily'],
+      supply: ['2 weeks'],
+      followUp: ['2 weeks'],
     },
   },
   {
     name: 'Cupping / gua sha session',
     description: 'Bodywork-only visit.',
-    fields: {
-      subjective: 'Area of complaint:\nPain level (0-10):',
-      objective: 'Tissue findings:\nSha coloration / marking:',
-      pointsUsed: 'Technique:\nAreas treated:\nDuration:',
-      plan: 'Aftercare instructions given:\nNext visit:',
+    presets: {
+      technique: ['Cupping', 'Gua sha'],
+      retention: 15,
+      tolerance: ['Tolerated well'],
+      homeCare: ['Hydration', 'Heat to area'],
+      followUp: ['1 week'],
     },
   },
 ];
@@ -93,7 +97,7 @@ async function main() {
     const data = {
       name: template.name,
       description: template.description,
-      fieldsJson: template.fields as Prisma.InputJsonValue,
+      fieldsJson: { presets: template.presets } as Prisma.InputJsonValue,
       active: true,
     };
     if (existing) {
