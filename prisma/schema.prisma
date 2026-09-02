@@ -20,6 +20,20 @@ enum Sex {
   UNDISCLOSED
 }
 
+/// One row per authentication attempt, used both for throttling and for the
+/// login-monitoring evidence HIPAA §164.308(a)(5)(ii)(C) expects.
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  ip        String?
+  success   Boolean
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([ip, createdAt])
+}
+
 enum IntakeStatus {
   IN_PROGRESS
   SUBMITTED
@@ -39,6 +53,14 @@ model User {
   credentials    String?
   active         Boolean   @default(true)
   lastLoginAt    DateTime?
+  /// TOTP shared secret. Present once enrolment starts; MFA is only in force once
+  /// mfaEnabledAt is set, so a half-finished enrolment can't lock anyone out.
+  mfaSecret      String?
+  mfaEnabledAt   DateTime?
+  /// bcrypt hashes of single-use recovery codes.
+  mfaRecoveryCodes String[] @default([])
+  /// Set on seeded and admin-reset accounts so the first login must choose a new password.
+  mustChangePassword Boolean @default(false)
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 

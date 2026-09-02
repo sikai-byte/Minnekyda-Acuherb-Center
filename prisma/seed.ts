@@ -5,7 +5,14 @@ import type { StructuredNote } from '../src/lib/notes/structure';
 
 const prisma = new PrismaClient();
 
-const DEV_PASSWORD = process.env.SEED_PASSWORD ?? 'minnekyda-dev';
+/// Seeded credentials are for local development only. In production the seed refuses to run
+/// without an explicit SEED_PASSWORD, and every seeded account must rotate its password and
+/// enrol in MFA at first sign-in.
+const DEV_PASSWORD = process.env.SEED_PASSWORD ?? 'Minnekyda-dev-1';
+
+if (process.env.NODE_ENV === 'production' && !process.env.SEED_PASSWORD) {
+  throw new Error('Refusing to seed production accounts with the development password');
+}
 
 const STAFF = [
   { email: 'admin@minnekyda.test', name: 'Clinic Admin', role: 'ADMIN' as const, credentials: null },
@@ -74,7 +81,7 @@ async function main() {
     await prisma.user.upsert({
       where: { email: member.email },
       update: { name: member.name, role: member.role, credentials: member.credentials },
-      create: { ...member, passwordHash },
+      create: { ...member, passwordHash, mustChangePassword: true },
     });
   }
 
