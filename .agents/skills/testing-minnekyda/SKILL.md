@@ -354,9 +354,9 @@ text columns from that structure on every save (`composeNoteText`).
 ## Action-level (not route-level) authorization probes
 - Recipe: render the privileged form in window 1, sign in as the lower-privileged user in window 2
   (same cookie jar → the session is downgraded), then submit the *already-rendered* form in window 1.
-- Expect: no row written (check the relevant table count in psql) — but note the browser currently
-  shows a generic `Something went wrong` error page rather than a clean bounce, so judge the result
-  from the DB, not the screen.
+- Expect: no row written (check the relevant table count in psql), and the open form renders
+  `Your sign-in no longer allows this. Sign in again, then try it once more.` in place. Check both:
+  the inline message is the fix, the DB is the proof.
 
 ## Devin Secrets Needed
 None — all local, `SESSION_SECRET` is generated locally.
