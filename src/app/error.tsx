@@ -9,9 +9,16 @@ export default function ErrorPage({ reset }: { error: Error; reset: () => void }
       <p className="mt-2 text-sm text-clay-600">
         Nothing was saved. Try again, and let the front desk know if it keeps happening.
       </p>
-      <button type="button" onClick={reset} className="btn-primary mt-6">
-        Try again
-      </button>
+      <div className="mt-6 flex items-center justify-center gap-3">
+        <button type="button" onClick={reset} className="btn-primary">
+          Try again
+        </button>
+        {/* A session that expired or changed roles under an open screen lands here, and the
+            way out of that is a fresh sign-in rather than another attempt. */}
+        <a href="/login" className="btn-ghost">
+          Sign in again
+        </a>
+      </div>
     </div>
   );
 }
