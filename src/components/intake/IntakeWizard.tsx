@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useMemo, useState, useTransition } from 'react';
+import { BrandLockup, BrandMark } from '@/components/Brand';
 import { SignaturePad } from '@/components/SignaturePad';
 import { exitKiosk, saveIntake } from '@/lib/actions/intake';
 import type { IntakeAnswers, IntakeField, IntakeSchema, SignatureValue } from '@/lib/intake/types';
@@ -70,7 +71,8 @@ export function IntakeWizard({
 
   if (done) {
     return (
-      <div className="card mx-auto max-w-lg text-center">
+      <div className="card mx-auto flex max-w-lg flex-col items-center text-center">
+        <BrandLockup width={200} className="mb-6" />
         <h1 className="text-2xl font-semibold">Thank you</h1>
         <p className="mt-2 text-clay-600">
           Your intake form has been submitted. Please hand the iPad back to the front desk.
@@ -87,7 +89,8 @@ export function IntakeWizard({
   return (
     <div className="mx-auto max-w-3xl pb-28">
       <div className="mb-6">
-        <p className="text-sm text-clay-500">
+        <p className="flex items-center gap-2 text-sm text-clay-500">
+          <BrandMark height={22} />
           {schema.title} · {patientLabel}
         </p>
         <h1 className="mt-1 text-2xl font-semibold tracking-tight">{section.title}</h1>

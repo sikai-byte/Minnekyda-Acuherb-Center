@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { BrandWordmark } from '@/components/Brand';
 import { logout } from '@/lib/actions/auth';
 
 /// The portal deliberately shares no navigation with the staff app: nothing here links to
@@ -8,8 +9,8 @@ export function PortalShell({ name, children }: { name: string; children: React.
     <div className="min-h-screen">
       <header className="no-print border-b border-clay-200 bg-white">
         <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
-          <Link href="/portal" className="text-lg font-semibold tracking-tight text-clay-900">
-            Minnekyda <span className="text-moss-600">Acuherb</span>
+          <Link href="/portal">
+            <BrandWordmark />
           </Link>
           <nav className="flex items-center gap-1 text-sm">
             <Link href="/portal" className="btn-ghost">

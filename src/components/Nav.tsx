@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { BrandWordmark } from '@/components/Brand';
 import type { SessionUser } from '@/lib/session';
 import { logout } from '@/lib/actions/auth';
 
@@ -14,8 +15,8 @@ export function Nav({ user }: { user: SessionUser }) {
   return (
     <header className="no-print border-b border-clay-200 bg-white">
       <div className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
-        <Link href="/" className="text-lg font-semibold tracking-tight text-clay-900">
-          Minnekyda <span className="text-moss-600">Acuherb</span>
+        <Link href="/">
+          <BrandWordmark />
         </Link>
         <nav className="flex items-center gap-1 text-sm">
           <Link href="/schedule" className="btn-ghost">

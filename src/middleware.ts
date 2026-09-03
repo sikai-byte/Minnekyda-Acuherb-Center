@@ -106,5 +106,7 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/((?!_next/static|_next/image|favicon.ico).*)'],
+  /// `brand/` and `icon.svg` are the clinic's own logo files: no chart data, and they have to
+  /// load on the sign-in and public booking screens where there is no session yet.
+  matcher: ['/((?!_next/static|_next/image|favicon.ico|icon.svg|brand/).*)'],
 };
