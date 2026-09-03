@@ -85,8 +85,11 @@ export function summarise(
     completed: counted(['COMPLETED']).length,
     cancelled: counted(['CANCELLED']).length,
     noShows: counted(['NO_SHOW']).length,
-    firstVisits: occupying.filter((appointment) => appointment.firstVisit).length,
-    returning: occupying.filter((appointment) => !appointment.firstVisit).length,
+    /// Split over everything booked, not only the visits that occupy time, so the two numbers
+    /// add up to `booked`: an owner reading "8 booked, 2 first visits, 4 returning" cannot
+    /// reconcile it, and a cancelled first visit is still a first visit the clinic was asked for.
+    firstVisits: appointments.filter((appointment) => appointment.firstVisit).length,
+    returning: appointments.filter((appointment) => !appointment.firstVisit).length,
     bookedMinutes,
     openMinutes,
     roomMinutes,

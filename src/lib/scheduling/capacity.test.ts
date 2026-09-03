@@ -70,9 +70,10 @@ describe('summarise', () => {
     });
   });
 
-  it('separates first visits from returning ones, ignoring the visits that did not happen', () => {
+  it('splits first from returning visits so the two add up to what was booked', () => {
     expect(summary.firstVisits).toBe(1);
-    expect(summary.returning).toBe(3);
+    expect(summary.returning).toBe(5);
+    expect(summary.firstVisits + summary.returning).toBe(summary.booked);
   });
 
   it('counts only occupying minutes towards the fill rate', () => {
