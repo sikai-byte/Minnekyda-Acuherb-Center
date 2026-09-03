@@ -5,7 +5,7 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import type { Role } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { requireRole } from '@/lib/auth';
+import { SIGN_IN_AGAIN, roleOrRefusal } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
 import { temporaryPassword } from '@/lib/tempPassword';
 
@@ -41,7 +41,8 @@ async function staffAccount(userId: string) {
 }
 
 export async function createStaffAccount(formData: FormData): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
 
   const parsed = newStaffSchema.safeParse({
     email: formData.get('email'),
@@ -79,7 +80,8 @@ export async function createStaffAccount(formData: FormData): Promise<StaffActio
 
 /// Puts the account back to a one-time password that must be changed on the next sign-in.
 export async function resetStaffPassword(userId: string): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
 
@@ -103,7 +105,8 @@ export async function resetStaffPassword(userId: string): Promise<StaffActionSta
 /// For a lost or replaced phone: clearing the enrolment lets the next sign-in set up a new
 /// authenticator, and it invalidates the old secret and every unused recovery code.
 export async function resetStaffMfa(userId: string): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
 
@@ -129,7 +132,8 @@ export async function setStaffActive(
   userId: string,
   active: boolean,
 ): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
   /// Deactivating yourself would leave nobody able to turn the account back on.
@@ -154,7 +158,8 @@ export async function setStaffActive(
 }
 
 export async function changeStaffRole(userId: string, role: Role): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
   if (!STAFF_ROLES.includes(role as (typeof STAFF_ROLES)[number])) {

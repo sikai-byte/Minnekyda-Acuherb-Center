@@ -329,5 +329,34 @@ text columns from that structure on every save (`composeNoteText`).
   `wmctrl -i -r <win> -e 0,40,40,820,1100`; schedule cards, capacity cards, portal booking and
   `/book` all reflow to one/two columns and status taps work at that size.
 
+## Full 16-step kiosk intake submit (and its traps)
+- Front desk starts the intake from the chart, then hands over: the wizard URL is
+  `/intake/<intakeSubmissionId>` and works under the kiosk token with no staff nav.
+- Only step 1 has required fields (`Full name`, `Phone number`, `Birthday`, `Main concern`). The
+  wizard lets you **advance past step 1 with a required field empty** and only blocks at the final
+  `Submit intake` with `Please complete: Birthday` — so fill step 1 carefully or you will walk all
+  16 steps twice. Values already entered are preserved when you walk back, so only the missing
+  field needs re-entry.
+- The `Birthday` field is a native `<input type="date">`: click it and type `02/23/1974` (with
+  slashes). Typing digits only, or typing after a triple-click without clearing, silently leaves it
+  blank — verify via the DOM (`<input type="date" text="1974-02-23"/>`) before continuing.
+- Steps 3–13 are body-system symptom chips and are all optional: `Save and continue` at roughly the
+  same button coordinate advances them, so a batch of clicks with ~3 s waits walks the middle of
+  the wizard quickly.
+- Steps 14–16 are policies / acupuncture consent / arbitration: each needs the consent checkbox
+  ticked and a signature drawn on the canvas (drag inside the dashed box → `Signature captured`).
+  Step 16 has an optional initials field (Article 6 retroactive effect).
+- After `Submit intake` the branded `Thank you` screen renders the full logo lockup
+  (`/brand/minnekyda-logo.svg`) and `IntakeSubmission.status` becomes `SUBMITTED` with
+  `submittedAt` set. Typing another route (e.g. `/patients`) from that screen keeps the browser on
+  the intake URL; `Done` drops the kiosk token and lands on `/login`.
+
+## Action-level (not route-level) authorization probes
+- Recipe: render the privileged form in window 1, sign in as the lower-privileged user in window 2
+  (same cookie jar → the session is downgraded), then submit the *already-rendered* form in window 1.
+- Expect: no row written (check the relevant table count in psql) — but note the browser currently
+  shows a generic `Something went wrong` error page rather than a clean bounce, so judge the result
+  from the DB, not the screen.
+
 ## Devin Secrets Needed
 None — all local, `SESSION_SECRET` is generated locally.

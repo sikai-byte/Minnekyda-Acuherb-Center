@@ -9,6 +9,7 @@ import { recordAudit } from '@/lib/audit';
 import { recordEvent } from '@/lib/telemetry';
 import { getKioskSession, getSession } from '@/lib/session';
 import { kioskPath } from '@/lib/kiosk';
+import { missingRequired } from '@/lib/intake/required';
 import type { IntakeSchema, SignatureValue } from '@/lib/intake/types';
 
 /// Answers are stored as an opaque JSON blob keyed by field. We validate the shape
@@ -117,7 +118,7 @@ export async function saveIntake(
 
   if (submit) {
     const schema = submission.form.schemaJson as unknown as IntakeSchema;
-    const missing = requiredFieldsMissing(schema, plainAnswers, signatures);
+    const missing = missingRequired(schema, (key) => signatures[key] ?? plainAnswers[key]);
     if (missing.length > 0) {
       return { ok: false, error: `Please complete: ${missing.join(', ')}` };
     }
@@ -164,27 +165,3 @@ export async function saveIntake(
   return { ok: true };
 }
 
-function requiredFieldsMissing(
-  schema: IntakeSchema,
-  answers: Record<string, unknown>,
-  signatures: Record<string, SignatureValue>,
-): string[] {
-  const missing: string[] = [];
-  for (const section of schema.sections) {
-    for (const field of section.fields) {
-      if (field.type === 'signature') {
-        if (!signatures[field.key]) missing.push(`${section.title} — ${field.label}`);
-        continue;
-      }
-      if (field.type === 'consent') {
-        if (answers[field.key] !== true) missing.push(`${section.title} — agreement`);
-        continue;
-      }
-      if ('required' in field && field.required) {
-        const value = answers[field.key];
-        if (typeof value !== 'string' || value.trim() === '') missing.push(field.label);
-      }
-    }
-  }
-  return missing;
-}

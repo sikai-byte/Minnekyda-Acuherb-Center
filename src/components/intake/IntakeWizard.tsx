@@ -4,6 +4,7 @@ import { useCallback, useMemo, useState, useTransition } from 'react';
 import { BrandLockup, BrandMark } from '@/components/Brand';
 import { SignaturePad } from '@/components/SignaturePad';
 import { exitKiosk, saveIntake } from '@/lib/actions/intake';
+import { missingRequiredInSection } from '@/lib/intake/required';
 import type { IntakeAnswers, IntakeField, IntakeSchema, SignatureValue } from '@/lib/intake/types';
 import { isCheckboxGridValue } from '@/lib/intake/types';
 
@@ -53,6 +54,14 @@ export function IntakeWizard({
   }, []);
 
   const persist = (submit: boolean) => {
+    /// Checked per step as well as on the server at submit, so a blank field on step 1 is
+    /// caught there rather than after the patient has worked through the whole packet.
+    const missing = missingRequiredInSection(section, (key) => answers[key]);
+    if (missing.length > 0) {
+      setError(`Please complete: ${missing.join(', ')}`);
+      window.scrollTo({ top: 0 });
+      return;
+    }
     setError(null);
     startTransition(async () => {
       const result = await saveIntake(submissionId, answers, submit);
@@ -103,6 +112,8 @@ export function IntakeWizard({
         </p>
       </div>
 
+      {error ? <p className="field-error mb-4">{error}</p> : null}
+
       <div className="card grid gap-5 sm:grid-cols-6">
         {section.fields.map((field) => (
           <div key={field.key} className={fieldClass(field)}>
@@ -110,8 +121,6 @@ export function IntakeWizard({
           </div>
         ))}
       </div>
-
-      {error ? <p className="field-error mt-4">{error}</p> : null}
 
       <div className="fixed inset-x-0 bottom-0 border-t border-clay-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-3 px-4 py-3">
