@@ -1,127 +1,183 @@
 # Minnekyda Acuherb Center
 
-Clinic platform for Minnekyda Acuherb Center. This first release covers the two workflows that
-are still on paper today:
+Clinic platform for a single-site Traditional Chinese Medicine practice. It replaces the paper
+new-patient packet in the filing cabinet and the typed visit note, and it is on its way to
+replacing Acuity for scheduling and to reporting on the clinic's Stripe payments.
 
-- **iPad patient intake** — the clinic's paper new-patient packet, digitized field-for-field,
-  including clinic policies, the acupuncture informed consent, and the arbitration agreement,
-  with on-screen signature capture.
-- **Practitioner visit notes** — tap-first TCM notes: pain and improvement sliders, chip pickers for
-  the ten questions, tongue/pulse, patterns, points and techniques, and plan, with optional free text
-  per section. Selections are stored in `ClinicalNote.fieldsJson` and rendered into the note's text
-  columns by `composeNoteText` (`src/lib/notes/structure.ts`), so charts and print output are
-  unchanged. Notes lock on signature and are corrected through amendments rather than edits.
+Everything in here is treated as PHI. Nothing is deployed, and no real patient data may be
+entered anywhere hosted until the hosting BAA is signed (see [Before real patients](#before-real-patients)).
 
-Scheduling, payments, and reporting are deliberately out of scope for now.
+## Scope at a glance
+
+| Area | State | Where |
+| --- | --- | --- |
+| iPad patient intake (paper packet, field-for-field, signatures) | **Built** | `src/app/kiosk`, `src/app/intake`, `src/lib/intake` |
+| Practitioner visit notes (tap-first TCM note, sign + amend) | **Built** | `src/app/notes`, `src/components/NoteEditor.tsx`, `src/lib/notes` |
+| Patient charts and demographics | **Built** | `src/app/patients` |
+| Staff accounts, roles, MFA, audit log | **Built** | `src/app/admin`, `src/lib/actions/staff.ts`, `src/lib/audit.ts` |
+| Patient portal (own paperwork and visit dates only) | **Built** | `src/app/portal`, `src/lib/portalScope.ts` |
+| Scheduling / booking (replaces Acuity) | **Not built** | — |
+| Payments and Stripe reconciliation | **Not built** | — |
+| Reporting (visits, weekly occupancy) | **Not built** | — |
+| Insurance billing | **Out of scope** for now, planned later | — |
+| Scanning historical paper charts | **Out of scope** for now, planned later | — |
+| Deployment / hosting | **Not done** — runs locally only | — |
+
+Deliberate product decisions, so nobody re-litigates them by accident:
+
+- **Patients never see clinical notes.** Not a toggle, not a permission — the portal's queries
+  select no note text and a test fails the build if portal code so much as references a note text
+  column. There is no note-release feature and none is planned.
+- **No clinical detail ever reaches Stripe or any email/SMS provider.** Charges read like
+  "Office visit — 60 min". Stripe will not sign a BAA, so this is a hard design rule.
+- **Hidden navigation is not access control.** Every route and every server action is guarded
+  server-side, and `src/lib/authz.test.ts` fails the build when a new one appears unguarded.
+
+## Clinic rules the software encodes
+
+- Five treatment rooms.
+- Standard treatment 60 minutes; first consultation + treatment 75 minutes.
+- Appointments are staggered 15 minutes apart (so up to five concurrent treatments with offset
+  starts — not five patients per hour).
+
+These are recorded here because they drive the scheduling engine and the occupancy report; the
+scheduling module that consumes them does not exist yet.
 
 ## Stack
 
-Next.js 14 (App Router, server actions) · TypeScript · Tailwind · Prisma · PostgreSQL ·
-iron-session.
+Next.js 14 (App Router, server actions — there is no separate API service) · TypeScript ·
+Tailwind · Prisma · PostgreSQL · iron-session cookies · Vitest · Docker Compose for local
+Postgres. Production target is Google Cloud (Cloud Run + Cloud SQL + KMS), which offers a
+click-accept BAA.
 
-## Local development
+## Data model
 
-```bash
-cp .env.example .env          # set SESSION_SECRET to 32+ random characters
-docker compose up -d          # Postgres on localhost:55433
-npm install
-npx prisma migrate deploy       # committed migrations; production uses the same command
-npm run db:seed
-npm run dev
-```
+`prisma/schema.prisma` is the source of truth. The shape of it:
 
-Seeded logins (development only, password `Minnekyda-dev-1`). Every one of them is created with
-`mustChangePassword` set and no second factor, so the first sign-in walks through authenticator
-enrolment and a password change before anything else is reachable:
+- **`User`** — one row per login, for staff *and* patients. `role` is `ADMIN` / `PRACTITIONER` /
+  `FRONT_DESK` / `PATIENT`. A `PATIENT` row carries `patientId`, the unique link to the one chart
+  it may ever read. Holds the TOTP secret (encrypted), recovery-code hashes, and
+  `mustChangePassword`.
+- **`Patient`** — the chart: demographics, contact, emergency contact, `archivedAt`.
+- **`IntakeForm`** — a *versioned* questionnaire (`slug` + `version`). Editing a live form creates
+  a new version so old submissions always render against what was actually signed.
+- **`IntakeSubmission`** — one patient's answers plus signature images, bound to a form version.
+  `startedById` is the staff member who handed over the iPad, which is how a patient-typed
+  submission gets attributed in the audit log.
+- **`NoteTemplate`** — pre-loaded note skeletons (`fieldsJson`).
+- **`ClinicalNote`** — the visit note. Tap-first selections live in `fieldsJson` and are composed
+  into the text columns; signing sets `signedAt` and freezes the row. Corrections are a new row
+  pointing back through `amendsId`, never an edit.
+- **`AuditLog`** — every chart view, intake submission, and note write, with user, IP, and user
+  agent. Append-only; the app never prunes it.
+- **`LoginAttempt`** — every authentication attempt, used for throttling and as login-monitoring
+  evidence.
 
-| Email | Role | Sees |
-| --- | --- | --- |
-| `admin@minnekyda.test` | ADMIN | everything, including the audit log |
-| `practitioner@minnekyda.test` | PRACTITIONER | charts, intakes, clinical notes |
-| `frontdesk@minnekyda.test` | FRONT_DESK | demographics and intake paperwork only |
+Migrations are committed under `prisma/migrations` and production runs `prisma migrate deploy`.
+`npm run db:drift` fails if the schema and migrations disagree.
 
-Patient portal logins are not seeded: create a patient, add an email, then use the "Patient
-portal" card on their chart to issue one.
+## Who can see what
 
-## Access control
+| | ADMIN | PRACTITIONER | FRONT_DESK | PATIENT |
+| --- | --- | --- | --- | --- |
+| Patient list, demographics, chart header | yes | yes | yes | own chart only |
+| Intake paperwork | yes | yes | yes | own, read-only |
+| Clinical note content | yes | yes | **no** | **never** |
+| Start a kiosk intake | yes | yes | yes | no |
+| Staff accounts (`/admin/staff`) | yes | no | no | no |
+| Audit log (`/admin/audit`) | yes | no | no | no |
+
+## Security model
 
 - **Deny by default.** `src/middleware.ts` authenticates every route except the sign-in screens;
-  pages narrow further with `requireUser` / `requireRole`. `src/lib/authz.test.ts` fails the build
-  if a new page or server action is added without a guard, because hidden navigation is not a
-  control.
-- **The kiosk iPad has no staff session.** Starting an intake destroys the staff session on that
-  device and issues a token scoped to that one submission (45-minute lifetime); the middleware
-  refuses every other path for it, so the address bar leads nowhere. Staff sign in again afterwards.
-- **Staff MFA is mandatory.** Password entry produces only a pending session with no authority;
-  a TOTP code or a single-use recovery code is what mints a real session.
+  pages narrow further with `requireUser` / `requireRole`.
+- **The kiosk iPad holds no staff session.** Starting an intake destroys the staff session on that
+  device and issues a token scoped to that one submission (45-minute life). Every other path is
+  refused for that token, so the address bar leads nowhere. Staff sign in again afterwards.
+- **Staff MFA is mandatory.** A password produces only a pending session with no authority; a TOTP
+  code or a single-use recovery code is what mints a real session. Patient logins are
+  password-only — requiring an authenticator app of every patient would push them back to phoning
+  the front desk. Revisit if the portal ever carries anything clinical.
 - **Brute force.** Failures are counted per account (5) and per source address (20) over 15
-  minutes and recorded in `LoginAttempt` with a reason code. The log is evidence and is never
-  pruned by the application.
-- **Idle sessions die.** On top of the 8-hour absolute session, the middleware ends a session
-  after 30 minutes without a request and sends the browser to `/login?reason=idle`, because the
-  front desk machine is a shared surface. The cookie is rewritten at most once a minute.
-- **Patient names never travel in a URL.** Search posts the term to a server action
-  (`searchPatients`) and renders results in place, so no name reaches an upstream access log;
-  `authz.test.ts` fails the build if a page starts reading a `q` query parameter again.
-- Security headers (CSP with per-request nonce, HSTS, `X-Frame-Options`, `Referrer-Policy`,
+  minutes, with a reason code in `LoginAttempt`.
+- **Sessions die twice over.** 8-hour absolute lifetime, plus the middleware ends a session after
+  30 minutes without a request and sends the browser to `/login?reason=idle`, because the front
+  desk machine is a shared surface.
+- **Patient names never travel in a URL.** Search posts the term to the `searchPatients` server
+  action and renders results in place, so no name reaches an upstream access log. A test fails the
+  build if a page starts reading a `q` query parameter again.
+- **TOTP secrets are encrypted at rest** (AES-256-GCM, `src/lib/secretBox.ts`), so a database dump
+  is not a working second factor. The data key comes from `MFA_ENCRYPTION_KEY`; in production that
+  is a key decrypted from Cloud KMS at boot. The stored format is versioned for rotation.
+- **PHI stays out of logs.** Error screens, the audit-write failure path, and the login-attempt
+  failure path record codes and messages only — never patient data, note text, or intake answers.
+- Security headers (CSP with a per-request nonce, HSTS, `X-Frame-Options`, `Referrer-Policy`,
   `Permissions-Policy`, `Cache-Control: no-store`) are set in the middleware.
 
 ### Staff accounts
 
-`/admin/staff` (ADMIN only) is where staff accounts are managed without touching the database:
-add an account with a one-time password, reset a password, reset an authenticator after a lost
-phone, change a role, and deactivate a leaver. Deactivation keeps the account, its notes and its
-audit history. An admin cannot deactivate or demote themselves, and the last active admin cannot
-be removed. Patient portal accounts are not listed here.
+`/admin/staff` (ADMIN only) manages staff without touching the database: add an account with a
+one-time password, reset a password, reset an authenticator after a lost phone, change a role,
+deactivate a leaver. Deactivation keeps the account, its notes, and its audit history. An admin
+cannot deactivate or demote themselves, and the last active admin cannot be removed. Patient
+portal accounts are not listed here.
 
 ### Patient portal
 
-- A `PATIENT` account is bound to exactly one chart through `User.patientId`, and that column is
-  the portal's only source of patient identity: no portal query takes an id from the URL, so a
-  patient cannot ask for someone else's record. Another patient's submission id simply 404s.
-- `requirePatient` guards the portal; `requireUser` — which every staff page and staff action
-  uses — bounces a `PATIENT` session back to `/portal`, and the middleware refuses any path
-  outside `/portal` and `/account/password` for it before the request reaches a page.
-- Patients see their submitted intake paperwork, their visit dates and who they saw, and can
-  correct their own contact and emergency details. **Clinical note content is never shown**; the
-  portal queries select no note text at all, and `authz.test.ts` fails the build if a note text
-  field is even referenced under `src/app/portal`.
-- Staff issue access from the chart ("Patient portal" card): the patient's email becomes the
-  username and a one-time password is displayed once, on screen, with `mustChangePassword` set.
-  Turning access off deactivates the login and keeps its audit history.
-- Patient logins are password-only — staff MFA is mandatory, but requiring an authenticator app
-  of every patient would push them back to phoning the front desk. Revisit if the portal ever
-  carries note content.
+A `PATIENT` account is bound to exactly one chart through `User.patientId`, and that column is the
+portal's only source of patient identity — no portal query takes an id from the request, so
+another patient's submission id simply 404s. Patients see their submitted paperwork, their visit
+dates and who they saw, and can correct their own contact and emergency details. Staff issue
+access from the "Patient portal" card on the chart; the one-time password is shown once on screen.
 
-## Handling PHI
+## Local development
 
-- Clinical notes are readable only by `ADMIN` and `PRACTITIONER`; front desk staff can register
-  patients and start intakes but cannot open notes.
-- Every chart view, intake submission, and note write is written to `AuditLog` with user, IP, and
-  user agent.
-- Signed notes are immutable. `amendNote` creates a linked draft (`amendsId`) so the original
-  stays in the chart.
-- Intake submissions store the exact schema version they were captured against, so a form
-  revision never rewrites history.
-- Error screens, the audit-write failure path, and the login-attempt failure path log codes and
-  messages only — never patient data, note text, or intake answers.
-- TOTP secrets are encrypted at rest with AES-256-GCM (`src/lib/secretBox.ts`) so a database
-  dump is not a working second factor. The data key comes from `MFA_ENCRYPTION_KEY`, which in
-  production holds a key decrypted from Cloud KMS at boot; the stored format is versioned for
-  rotation, and a secret written before encryption existed still verifies and is rewritten
-  encrypted on next use.
-- Do not run production with real patient data until the hosting BAA is in place. Railway is for
-  a synthetic-data pilot only; Google Cloud (Cloud Run + Cloud SQL) is the production target.
+```bash
+cp .env.example .env          # SESSION_SECRET needs 32+ random characters
+docker compose up -d          # Postgres on localhost:55433 (docker start minnekyda-db if it exists)
+npm install
+npx prisma migrate deploy     # same command production runs
+npm run db:seed
+npm run dev
+```
 
-## Scripts
+Seeded logins (development only, password `Minnekyda-dev-1`): `admin@minnekyda.test`,
+`practitioner@minnekyda.test`, `frontdesk@minnekyda.test`. All three are created with
+`mustChangePassword` and no second factor, so the first sign-in walks through authenticator
+enrolment and a password change before anything else is reachable. Patient portal logins are not
+seeded — create a patient, give them an email, then issue one from their chart.
+
+Use synthetic data only. `.agents/skills/testing-minnekyda/SKILL.md` documents how to bring the
+app up and exercise it end to end.
 
 | Script | Purpose |
 | --- | --- |
 | `npm run dev` | development server |
 | `npm run build` / `npm start` | production build and serve |
 | `npm run lint` / `npm run typecheck` | ESLint / `tsc --noEmit` |
-| `npm test` | Vitest unit tests, including the authorization audit |
-| `npm run db:push` | sync the Prisma schema to the database (development only) |
+| `npm test` | Vitest, including the authorization audit |
 | `npm run db:migrate` | create a migration |
-| `npm run db:drift` | fail if the committed migrations no longer match `schema.prisma` |
+| `npm run db:drift` | fail if committed migrations no longer match `schema.prisma` |
 | `npm run db:seed` | staff users, intake form v1, note templates |
+| `npm run db:push` | sync schema without a migration (development only) |
+
+## Before real patients
+
+Launch gates, not nice-to-haves:
+
+1. Accept the Google Cloud BAA and deploy only BAA-covered services (Cloud Run, Cloud SQL, Cloud
+   Storage, KMS, Logging).
+2. Serve `MFA_ENCRYPTION_KEY` and `SESSION_SECRET` from Secret Manager / KMS, not env files.
+3. Tested database backup *and restore*, not just backups.
+4. Upgrade Next.js 14 → 16 (the only fix for 8 high advisories in the 14.2 tree) and re-run the
+   full regression pass.
+5. Counsel review of the consent, arbitration, privacy, and retention wording transcribed from the
+   paper packet.
+6. Access review, PHI-in-logs re-audit, and an independent penetration test.
+7. Load / soak / cold-start testing against Cloud Run + Cloud SQL connection limits.
+
+## Build history
+
+Stacked branches, each reviewed as its own PR: intake + notes MVP (#1) → security hardening (#2) →
+patient portal (#3) → operational hardening: staff management, idle timeout, posted search,
+encrypted TOTP secrets (#4). Scheduling is next.
