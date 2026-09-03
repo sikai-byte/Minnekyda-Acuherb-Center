@@ -281,7 +281,18 @@ text columns from that structure on every save (`composeNoteText`).
   tomorrow (write the near one straight to the table — booking rules refuse such short notice).
   A move keeps the same appointment row and adds a `RESCHEDULED` event; nothing is deleted.
 - Website `/book` confirms as it books (`SCHEDULED`, not `REQUESTED`) while
-  `publicRequestsAutoConfirm` is true, and the screen says the visit is booked, not pending.
+  `publicRequestsAutoConfirm` is true, and the screen says the visit is booked, not pending. Flip
+  the row to `false` and the same screen must say the time is only held — that copy once lied.
+  Restore the row afterwards; everything else keys off it.
+- Cross-patient authorization probes on the portal are easiest through the form, not the URL: open
+  patient A's reschedule picker, select a time, swap the hidden `appointmentId` input to patient B's
+  appointment id, submit. Expect `That appointment is not on your record.` and zero new
+  `AppointmentEvent` rows on B's appointment.
+- Before any marker/PHI grep of the DOM, hard-reload (`ctrl+shift+r`): a soft-navigated page keeps
+  the previous session's flight payloads in the document and produces false leak hits.
+- Scheduling runs want a genuinely empty day — `npx prisma migrate reset --force --skip-generate`
+  rather than re-seeding over a dirty database, or leftover appointments will move the slot lists
+  you are asserting exactly.
 - `/schedule/<appointmentId>` is the append-only `AppointmentEvent` history (staff roles only) and
   is the place to assert who/what/when: each row carries actor name, actor role, source
   (`staff`/`portal`/`public`) and the status transition. Row count must only grow.
