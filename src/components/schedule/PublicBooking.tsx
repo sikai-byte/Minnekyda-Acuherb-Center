@@ -32,13 +32,14 @@ export function PublicBooking({
   if (confirmed) {
     return (
       <div className="space-y-3">
-        <h2 className="text-lg font-semibold">Thank you — we have your request</h2>
+        <h2 className="text-lg font-semibold">Your visit is booked</h2>
         <p className="text-sm text-clay-700">
           {WHEN.format(new Date(confirmed.when))}. Reference {confirmed.reference}.
         </p>
         <p className="text-sm text-clay-600">
-          The clinic will confirm your appointment shortly. Please arrive ten minutes early for
-          your first visit so you have time to complete your health history on our iPad.
+          Your appointment is confirmed. Please arrive ten minutes early for your first visit so
+          you have time to complete your health history on our iPad, and call the clinic if you
+          need to change it.
         </p>
       </div>
     );

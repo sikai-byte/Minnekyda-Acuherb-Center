@@ -33,7 +33,7 @@ export default async function PublicBookingPage() {
       <main className="mx-auto max-w-3xl px-4 py-10">
         <h1 className="text-2xl font-semibold tracking-tight">Book your first visit</h1>
         <p className="mt-2 max-w-prose text-sm text-clay-600">
-          Choose a time that suits you and we will confirm it by phone or email. Please do not
+          Choose a time that suits you and it is yours — we will email you the details. Please do not
           send medical details through this form — you will fill in your health history
           privately on an iPad when you arrive.
         </p>

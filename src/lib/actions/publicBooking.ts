@@ -20,8 +20,10 @@ import { clinicIsoDate } from '@/lib/scheduling/time';
 /// symptom, reason or comment field anywhere in this flow, so nothing a stranger types on the
 /// open internet is health information.
 ///
-/// The request lands as an `Appointment` with status `REQUESTED`. It holds the room so the
-/// slot cannot be sold twice, and the front desk confirms it.
+/// The request lands as a booked `Appointment`, confirmed as it is made, because a website
+/// visitor who picked a time has booked one. `SchedulingPolicy.publicRequestsAutoConfirm`
+/// turns that off, and requests then land as `REQUESTED` for the front desk to confirm; either
+/// way the slot is held, so it cannot be sold twice.
 
 const PUBLIC_REQUESTS_PER_HOUR = 5;
 const PUBLIC_REQUESTS_PER_DAY = 20;
@@ -149,7 +151,7 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
     appointmentTypeId: appointmentType.id,
     startsAt,
     actor: { id: null, role: null, source: 'PUBLIC' },
-    status: 'REQUESTED',
+    status: settings.publicRequestsAutoConfirm ? 'SCHEDULED' : 'REQUESTED',
     minNoticeMinutes: settings.selfBookingNoticeMinutes,
   });
 

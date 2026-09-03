@@ -6,7 +6,7 @@ import { prisma } from '@/lib/db';
 import { requirePatient } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
 import { distinctStarts, getAvailableSlots } from '@/lib/scheduling/availability';
-import { applyLifecycle, bookAppointment } from '@/lib/scheduling/booking';
+import { applyLifecycle, bookAppointment, rescheduleAppointment } from '@/lib/scheduling/booking';
 import { schedulingSettings } from '@/lib/scheduling/policy';
 import { clinicIsoDate } from '@/lib/scheduling/time';
 
@@ -17,6 +17,11 @@ const requestSchema = z.object({
   /// Empty means "any practitioner", which is how most patients think about it.
   practitionerId: z.string(),
   appointmentTypeId: z.string().min(1),
+  startsAt: z.string().datetime(),
+});
+
+const rescheduleSchema = z.object({
+  appointmentId: z.string().min(1),
   startsAt: z.string().datetime(),
 });
 
@@ -113,6 +118,89 @@ async function anyPractitionerFor(
     minNoticeMinutes,
   });
   return slots.find((slot) => slot.startsAt.getTime() === startsAt.getTime())?.practitionerId ?? null;
+}
+
+/// The open times a patient may move an existing visit to: same visit type, same practitioner,
+/// and the visit's own slot ignored so it does not block itself. Scoped to the session's
+/// patient, so an id from somebody else's record returns nothing rather than their calendar.
+export async function portalRescheduleSlots(
+  appointmentId: string,
+  date: string,
+): Promise<string[]> {
+  const { patientId } = await requirePatient();
+  const appointment = await movableAppointment(appointmentId, patientId);
+  if (!appointment) return [];
+
+  const settings = await schedulingSettings();
+  const slots = await getAvailableSlots({
+    practitionerId: appointment.practitionerId,
+    appointmentTypeId: appointment.appointmentTypeId,
+    date,
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
+    ignoreAppointmentId: appointment.id,
+  });
+  return distinctStarts(slots).map((slot) => slot.startsAt.toISOString());
+}
+
+/// Moving a visit is the patient's to do up to the clinic's notice period — 48 hours — because
+/// inside that window the room is effectively spoken for and the clinic wants to hear about it.
+export async function portalReschedule(formData: FormData): Promise<PortalBookingState> {
+  const { user, patientId } = await requirePatient();
+  const parsed = rescheduleSchema.safeParse({
+    appointmentId: formData.get('appointmentId') ?? '',
+    startsAt: formData.get('startsAt') ?? '',
+  });
+  if (!parsed.success) return { error: 'Pick a new time.' };
+
+  const settings = await schedulingSettings();
+  const appointment = await movableAppointment(parsed.data.appointmentId, patientId);
+  if (!appointment) return { error: 'That appointment is not on your record.' };
+
+  if (withinNotice(appointment.startsAt, settings.selfRescheduleNoticeHours)) {
+    return { error: callTheOffice(settings.selfRescheduleNoticeHours) };
+  }
+
+  const startsAt = new Date(parsed.data.startsAt);
+  const result = await rescheduleAppointment({
+    appointmentId: appointment.id,
+    startsAt,
+    actor: { id: user.id, role: user.role, source: 'PORTAL' },
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
+  });
+  if (!result.ok) return { error: result.reason };
+
+  await recordAudit({
+    userId: user.id,
+    action: 'reschedule_appointment',
+    entity: 'Appointment',
+    entityId: appointment.id,
+    patientId,
+    detail: { source: 'PORTAL', startsAt: result.startsAt.toISOString() },
+  });
+
+  revalidatePath('/portal/appointments');
+  revalidatePath('/schedule');
+  return { confirmed: appointment.id };
+}
+
+function callTheOffice(hours: number): string {
+  return `Please call the clinic to change an appointment within ${hours} hours of its start.`;
+}
+
+function withinNotice(startsAt: Date, hours: number): boolean {
+  return startsAt.getTime() - Date.now() < hours * 60 * 60 * 1000;
+}
+
+async function movableAppointment(appointmentId: string, patientId: string) {
+  return prisma.appointment.findFirst({
+    where: {
+      id: appointmentId,
+      patientId,
+      status: { in: ['REQUESTED', 'SCHEDULED'] },
+      startsAt: { gt: new Date() },
+    },
+    select: { id: true, startsAt: true, practitionerId: true, appointmentTypeId: true },
+  });
 }
 
 export async function portalCancel(appointmentId: string): Promise<PortalBookingState> {

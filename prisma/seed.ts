@@ -81,6 +81,10 @@ const ROOMS = ['Room 1', 'Room 2', 'Room 3', 'Room 4', 'Room 5'];
 
 /// Visit types. The first consultation is longer because the intake and the treatment happen
 /// in the same appointment, and it is the only thing a stranger may book on the website.
+///
+/// The lead and close minutes are the clinic's: the practitioner is in the room for the first
+/// 15 and last 15 minutes of a treatment, and the first 30 and last 15 of a first consultation.
+/// The retention between them is what lets arrivals be staggered a quarter-hour apart.
 const APPOINTMENT_TYPES = [
   {
     slug: 'first-consultation',
@@ -89,6 +93,8 @@ const APPOINTMENT_TYPES = [
     minutes: 75,
     publiclyBookable: true,
     firstVisit: true,
+    practitionerLeadMinutes: 30,
+    practitionerCloseMinutes: 15,
   },
   {
     slug: 'acupuncture-treatment',
@@ -97,6 +103,8 @@ const APPOINTMENT_TYPES = [
     minutes: 60,
     publiclyBookable: true,
     firstVisit: false,
+    practitionerLeadMinutes: 15,
+    practitionerCloseMinutes: 15,
   },
 ];
 
@@ -167,8 +175,8 @@ async function main() {
     });
   }
 
-  /// The capacity policy exists as a row so the clinic can change it without a deploy. Seeded
-  /// at its conservative defaults; see the schema for what still needs the clinic's answer.
+  /// The scheduling policy exists as a row so the clinic can change a notice period or close
+  /// online booking without a deploy.
   await prisma.schedulingPolicy.upsert({ where: { id: 'default' }, update: {}, create: {} });
 
   /// Working hours belong to a practitioner, not the clinic, so a second practitioner can keep

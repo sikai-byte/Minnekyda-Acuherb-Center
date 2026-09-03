@@ -7,9 +7,10 @@ import {
   freeRoom,
   occupancy,
   practitionerFree,
-  practitionerWindow,
+  practitionerWindows,
   roomFree,
   slotIsOpen,
+  type ActivePhases,
   type Busy,
   type CapacityPolicy,
 } from './slots';
@@ -52,6 +53,11 @@ function at(time: string, isoDate = DAY): Date {
 function appointment(start: string, minutes: number, extra: Partial<Busy> = {}): Busy {
   return { startsAt: at(start), endsAt: addMinutes(at(start), minutes), ...extra };
 }
+
+/// The clinic's real answers: needles in for the first quarter hour of a treatment and out in
+/// the last, with a longer opening for the consultation that precedes a first treatment.
+const TREATMENT: ActivePhases = { leadMinutes: 15, closeMinutes: 15 };
+const FIRST_VISIT: ActivePhases = { leadMinutes: 30, closeMinutes: 15 };
 
 function times(slots: { startsAt: Date }[]): string[] {
   return slots.map((slot) => slot.startsAt.toISOString());
@@ -136,24 +142,33 @@ describe('candidateStarts', () => {
   });
 });
 
-describe('practitionerWindow', () => {
-  it('treats the whole visit as practitioner time under the conservative policy', () => {
+describe('practitionerWindows', () => {
+  it('treats the whole visit as practitioner time when no phases are declared', () => {
     const slot = { startsAt: at('09:00'), endsAt: at('10:00') };
-    expect(practitionerWindow(slot, CONSERVATIVE_POLICY).endsAt.toISOString()).toBe(
-      slot.endsAt.toISOString(),
-    );
+    expect(practitionerWindows(slot)).toEqual([slot]);
   });
 
-  it('shortens to the active minutes when the clinic has defined them', () => {
-    const slot = { startsAt: at('09:00'), endsAt: at('10:00') };
-    const policy: CapacityPolicy = { ...CONSERVATIVE_POLICY, practitionerActiveMinutes: 20 };
-    expect(practitionerWindow(slot, policy).endsAt.toISOString()).toBe(at('09:20').toISOString());
+  it('splits a treatment into its opening and closing phases', () => {
+    const slot = { startsAt: at('09:00'), endsAt: at('10:00'), phases: TREATMENT };
+    expect(times(practitionerWindows(slot))).toEqual([
+      at('09:00').toISOString(),
+      at('09:45').toISOString(),
+    ]);
   });
 
-  it('never claims more time than the visit itself', () => {
-    const slot = { startsAt: at('09:00'), endsAt: at('09:30') };
-    const policy: CapacityPolicy = { ...CONSERVATIVE_POLICY, practitionerActiveMinutes: 90 };
-    expect(practitionerWindow(slot, policy).endsAt.toISOString()).toBe(slot.endsAt.toISOString());
+  it('gives a first consultation its longer opening', () => {
+    const slot = { startsAt: at('09:00'), endsAt: at('10:15'), phases: FIRST_VISIT };
+    expect(times(practitionerWindows(slot))).toEqual([
+      at('09:00').toISOString(),
+      at('10:00').toISOString(),
+    ]);
+  });
+
+  it('falls back to the whole visit when the phases would cover it anyway', () => {
+    const slot = { startsAt: at('09:00'), endsAt: at('09:30'), phases: TREATMENT };
+    expect(practitionerWindows(slot)).toEqual([
+      { startsAt: at('09:00'), endsAt: at('09:30') },
+    ]);
   });
 });
 
@@ -220,15 +235,34 @@ describe('practitioner capacity', () => {
     ).toBe(false);
   });
 
-  it('permits staggering once the practitioner-active window is defined', () => {
-    const policy: CapacityPolicy = { ...CONSERVATIVE_POLICY, practitionerActiveMinutes: 15 };
-    const busy = [appointment('09:00', 60, { practitionerId: 'p1' })];
-    expect(practitionerFree('p1', { startsAt: at('09:15'), endsAt: at('10:15') }, busy, policy)).toBe(
-      true,
-    );
-    expect(practitionerFree('p1', { startsAt: at('09:05'), endsAt: at('10:05') }, busy, policy)).toBe(
-      false,
-    );
+  it('lets a treatment start a quarter hour after another while the first is retaining', () => {
+    const busy = [appointment('09:00', 60, { practitionerId: 'p1', phases: TREATMENT })];
+    const next = { startsAt: at('09:15'), endsAt: at('10:15'), phases: TREATMENT };
+    expect(practitionerFree('p1', next, busy)).toBe(true);
+  });
+
+  it('refuses a start that lands inside the opening phase of another visit', () => {
+    const busy = [appointment('09:00', 60, { practitionerId: 'p1', phases: TREATMENT })];
+    const clash = { startsAt: at('09:10'), endsAt: at('10:10'), phases: TREATMENT };
+    expect(practitionerFree('p1', clash, busy)).toBe(false);
+  });
+
+  it('refuses a start whose opening runs into another visit\u2019s closing phase', () => {
+    /// 09:00–10:00 needs the practitioner back at 09:45; a visit starting then would want the
+    /// same minutes for its own opening.
+    const busy = [appointment('09:00', 60, { practitionerId: 'p1', phases: TREATMENT })];
+    const clash = { startsAt: at('09:45'), endsAt: at('10:45'), phases: TREATMENT };
+    expect(practitionerFree('p1', clash, busy)).toBe(false);
+  });
+
+  it('keeps a whole hour clear after a first consultation\u2019s longer opening', () => {
+    const busy = [appointment('09:00', 75, { practitionerId: 'p1', phases: FIRST_VISIT })];
+    expect(
+      practitionerFree('p1', { startsAt: at('09:15'), endsAt: at('10:15'), phases: TREATMENT }, busy),
+    ).toBe(false);
+    expect(
+      practitionerFree('p1', { startsAt: at('09:30'), endsAt: at('10:30'), phases: TREATMENT }, busy),
+    ).toBe(true);
   });
 
   it('does not count the appointment being rescheduled against itself', () => {
@@ -310,6 +344,16 @@ describe('bookableSlots', () => {
     expect(times(bookableSlots({ ...base, busy, ignoreAppointmentId: 'a1' }))).toContain(
       '2026-03-16T14:00:00.000Z',
     );
+  });
+
+  it('keeps offering quarter-hour starts around a treatment that is retaining', () => {
+    const busy = [
+      appointment('09:00', 60, { practitionerId: 'p1', roomId: 'r1', phases: TREATMENT }),
+    ];
+    const offered = times(bookableSlots({ ...base, busy, phases: TREATMENT }));
+    expect(offered).toContain('2026-03-16T14:15:00.000Z'); // 09:15, into room 2
+    expect(offered).toContain('2026-03-16T14:30:00.000Z'); // 09:30
+    expect(offered).not.toContain('2026-03-16T14:45:00.000Z'); // 09:45 wants the closing phase
   });
 
   it('offers the full working day when the practitioner works it', () => {

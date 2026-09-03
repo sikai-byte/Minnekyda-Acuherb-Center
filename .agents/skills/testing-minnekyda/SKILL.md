@@ -246,5 +246,64 @@ text columns from that structure on every save (`composeNoteText`).
 - Generate TOTP codes with a helper *inside the repo* (e.g. `totp.ts` + `npx tsx totp.ts <base32>`);
   a script in `/tmp` cannot resolve `otpauth`.
 
+## Scheduling testing (Scheduling v2 and later)
+
+- Clinic time is `America/Chicago` (`src/lib/scheduling/time.ts`) while the dev box runs UTC, so
+  every rendered time must be checked against the clinic clock, not the container clock. Times on
+  `/schedule` and the booking pickers use clinic-time formatters; other surfaces (patient chart
+  appointment list, `/schedule/<id>` history rows, signed-note badges, `/admin/staff` last sign-in)
+  render with `formatDateTime` from `src/lib/format.ts`, which now pins `CLINIC_TIME_ZONE` — it
+  once did not, and a 3:30 PM visit read as 8:30 PM on the chart. Regression check worth repeating:
+  book a time on `/schedule`, then open the same appointment on the chart and compare.
+- Seed gives 5 rooms, `first-consultation` 75 min (public, first visit) and
+  `acupuncture-treatment` 60 min (returning), `SchedulingPolicy` with 15-min slot step,
+  120-min self-booking notice, 24-h self-cancel notice, 48-h self-reschedule notice, 60-day
+  horizon, `publicRequestsAutoConfirm = true` and `maxConcurrentPerPractitioner = 1`. The visit
+  types carry the practitioner-active phases (30/15 on the consultation, 15/15 on the treatment),
+  so one practitioner *can* hold staggered quarter-hour starts: 9:00 and 9:15 treatments together
+  is correct, 9:45 against a 9:00 is correctly refused. Only `practitioner@minnekyda.test` has
+  `PractitionerAvailability` (Mon–Fri 09:00–17:00, Sat 09:00–13:00), so it is the only bookable
+  practitioner and Saturday's last 75-min start is 11:45 AM — a short Saturday slot list is
+  correct behaviour, not a truncated picker.
+- Availability arithmetic is easy to sanity-check by hand: occupying statuses are
+  `REQUESTED/SCHEDULED/CHECKED_IN/COMPLETED`; `CANCELLED`/`NO_SHOW` release the time. A day with
+  10:00–12:15 and 13:00–15:15 taken should offer 9:00 then 15:15, 15:30, 15:45, 16:00 only.
+- To exercise the portal "taken slot" race without any harness: open `/portal/appointments`, pick
+  a time but do not submit, book that same time for another patient from a staff window, then
+  submit. Expect exactly `That time is no longer available. Pick another.` Portal booking also
+  enforces one upcoming visit at a time, so cancel/complete the patient's other visits first or
+  you will hit `You already have a visit booked.` instead of the conflict path.
+- Capacity report (`/schedule/capacity`): the `N first visits · M returning` split counts every
+  appointment, so it sums to `Booked`, while fill rate and utilisation count occupying visits only.
+  It read inconsistently once; check against `select status, "firstVisit" …` before calling it a bug.
+- Portal self-reschedule: `/portal/appointments` shows `Reschedule` only outside 48 hours; inside
+  it the card says to call the clinic instead. To test both, one appointment ≥3 days out and one
+  tomorrow (write the near one straight to the table — booking rules refuse such short notice).
+  A move keeps the same appointment row and adds a `RESCHEDULED` event; nothing is deleted.
+- Website `/book` confirms as it books (`SCHEDULED`, not `REQUESTED`) while
+  `publicRequestsAutoConfirm` is true, and the screen says the visit is booked, not pending.
+- `/schedule/<appointmentId>` is the append-only `AppointmentEvent` history (staff roles only) and
+  is the place to assert who/what/when: each row carries actor name, actor role, source
+  (`staff`/`portal`/`public`) and the status transition. Row count must only grow.
+- Public `/book` never looks a patient up: submitting an existing patient's exact name/DOB/email
+  creates a *second* chart with identical wording, which is the non-disclosure property to assert
+  (`select count(*) from "Patient" where email=…` = 2).
+- Patient sessions must bounce off `/schedule`, `/schedule/capacity` and `/schedule/<own id>` to
+  `/portal` (middleware + `portalScope`). Front desk sees no `Start visit note` button and no note
+  text anywhere.
+- Practitioner hand-off: `Start visit note` links to
+  `/patients/<id>/notes/new?appointmentId=<id>`; confirm in the DB that the saved note has the
+  chart's `patientId`, the signed-in practitioner's `authorId` and a non-null `appointmentId`.
+- Chrome DevTools/CDP (the console and DOM tools) attach to the **first** browser window only, so
+  DOM/RSC greps must be run in that window. Plan role sessions accordingly: do marker-leak greps
+  in window 1 (sign out and sign in as the patient there) and use the incognito window purely for
+  clicking. A soft-navigated login leaves earlier flight payloads in the document — hard-reload
+  (`ctrl+shift+r`) before grepping or you get false "leak" hits from the previous session's pages.
+- Kiosk containment has no visible exit control mid-wizard; once a window is in kiosk mode it stays
+  there, so run kiosk tests last or in a window you no longer need for staff work.
+- For an iPad-like viewport use `wmctrl -i -r <win> -b remove,maximized_vert,maximized_horz` then
+  `wmctrl -i -r <win> -e 0,40,40,820,1100`; schedule cards, capacity cards, portal booking and
+  `/book` all reflow to one/two columns and status taps work at that size.
+
 ## Devin Secrets Needed
 None — all local, `SESSION_SECRET` is generated locally.

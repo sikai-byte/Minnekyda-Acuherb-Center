@@ -1,7 +1,13 @@
 import type { AppointmentStatus, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { capacityPolicy, schedulingSettings, type SchedulingSettings } from './policy';
-import { bookableSlots, type Busy, type Slot, type WorkingWindow } from './slots';
+import {
+  bookableSlots,
+  type ActivePhases,
+  type Busy,
+  type Slot,
+  type WorkingWindow,
+} from './slots';
 import { addDays, clinicDayEnd, clinicDayStart, clinicIsoDate, clinicWeekday, isIsoDate } from './time';
 
 /// The single source of truth for "when can this be booked".
@@ -68,18 +74,50 @@ export async function workingWindows(
   });
 }
 
+/// The two columns every capacity question needs from a visit type, and the shape the slot
+/// engine wants them in.
+export const activePhaseSelect = {
+  practitionerLeadMinutes: true,
+  practitionerCloseMinutes: true,
+} satisfies Prisma.AppointmentTypeSelect;
+
+export function activePhases(type: {
+  practitionerLeadMinutes: number | null;
+  practitionerCloseMinutes: number | null;
+}): ActivePhases {
+  return {
+    leadMinutes: type.practitionerLeadMinutes,
+    closeMinutes: type.practitionerCloseMinutes,
+  };
+}
+
 /// Appointments are the only thing that makes a room or a practitioner busy, and only their
 /// times are read here — never the patient they belong to. That is deliberate: the availability
 /// path is reachable by a stranger on the public form.
 export async function busyOn(isoDate: string): Promise<Busy[]> {
+  /// The visit type is joined for its active phases alone — how much of each booked visit
+  /// needs the practitioner — which is scheduling arithmetic, not anything about the patient.
   return prisma.appointment.findMany({
     where: {
       status: { in: OCCUPYING_STATUSES },
       startsAt: { lt: clinicDayEnd(isoDate) },
       endsAt: { gt: clinicDayStart(isoDate) },
     },
-    select: { id: true, startsAt: true, endsAt: true, roomId: true, practitionerId: true },
-  }).then((rows) => rows.map(({ id, ...rest }) => ({ ...rest, appointmentId: id })));
+    select: {
+      id: true,
+      startsAt: true,
+      endsAt: true,
+      roomId: true,
+      practitionerId: true,
+      appointmentType: { select: activePhaseSelect },
+    },
+  }).then((rows) =>
+    rows.map(({ id, appointmentType, ...rest }) => ({
+      ...rest,
+      appointmentId: id,
+      phases: activePhases(appointmentType),
+    })),
+  );
 }
 
 export async function closuresOn(practitionerId: string, isoDate: string) {
@@ -119,7 +157,7 @@ export async function getAvailableSlots(query: SlotQuery): Promise<OfferedSlot[]
   const [appointmentType, rooms, busy] = await Promise.all([
     prisma.appointmentType.findFirst({
       where: { id: query.appointmentTypeId, active: true },
-      select: { id: true, minutes: true },
+      select: { id: true, minutes: true, ...activePhaseSelect },
     }),
     activeRooms(),
     busyOn(query.date),
@@ -140,6 +178,7 @@ export async function getAvailableSlots(query: SlotQuery): Promise<OfferedSlot[]
       return bookableSlots({
         isoDate: query.date,
         minutes: appointmentType.minutes,
+        phases: activePhases(appointmentType),
         windows,
         practitionerId,
         rooms,

@@ -11,7 +11,14 @@ import {
   setAppointmentStatus,
   staffOpenSlots,
 } from './appointments';
-import { portalBook, portalCancel, portalOpenSlots } from './portalBooking';
+import {
+  portalBook,
+  portalCancel,
+  portalOpenSlots,
+  portalReschedule,
+  portalRescheduleSlots,
+} from './portalBooking';
+import { requestPublicBooking } from './publicBooking';
 
 /// Authorization tested through the real server actions against a real database: who may
 /// call each one, and what happens when a signed-in patient names somebody else's
@@ -64,6 +71,9 @@ function nextMonday(): string {
 }
 
 const DAY = nextMonday();
+/// A week further on, so an appointment there is always outside the 48-hour self-reschedule
+/// cutoff no matter which weekday the suite runs on.
+const FAR = addDays(DAY, 7);
 
 function at(minutes: number, isoDate = DAY): Date {
   const instant = clinicTimeToUtc(isoDate, minutes);
@@ -226,6 +236,8 @@ const PORTAL_ACTIONS: [string, () => Promise<unknown>][] = [
   ['portalOpenSlots', () => portalOpenSlots('', fx.typeId, DAY)],
   ['portalBook', () => portalBook(new FormData())],
   ['portalCancel', () => portalCancel('any')],
+  ['portalRescheduleSlots', () => portalRescheduleSlots('any', DAY)],
+  ['portalReschedule', () => portalReschedule(new FormData())],
 ];
 
 describe('scheduling actions refuse the wrong caller', () => {
@@ -361,6 +373,199 @@ describe('cross-patient isolation', () => {
     again.set('appointmentTypeId', fx.typeId);
     again.set('startsAt', at(11 * 60).toISOString());
     expect((await portalBook(again)).error).toContain('already have an appointment');
+  });
+});
+
+describe('portal self-reschedule', () => {
+  function moveForm(appointmentId: string, startsAt: Date): FormData {
+    const form = new FormData();
+    form.set('appointmentId', appointmentId);
+    form.set('startsAt', startsAt.toISOString());
+    return form;
+  }
+
+  async function seedFar(patientId: string, minutes = NINE): Promise<string> {
+    const result = await bookAppointment({
+      patientId,
+      practitionerId: fx.practitionerId,
+      appointmentTypeId: fx.typeId,
+      startsAt: at(minutes, FAR),
+      actor: { id: null, role: 'FRONT_DESK', source: 'STAFF' },
+    });
+    if (!result.ok) throw new Error(`fixture booking failed: ${result.reason}`);
+    return result.appointmentId;
+  }
+
+  it('moves a patient\u2019s own visit and keeps the history', async () => {
+    const appointmentId = await seedFar(fx.patientId);
+    session = fx.patient;
+
+    const moved = await portalReschedule(moveForm(appointmentId, at(14 * 60, FAR)));
+    expect(moved.error).toBeUndefined();
+    expect(moved.confirmed).toBe(appointmentId);
+
+    const row = await prisma.appointment.findUniqueOrThrow({
+      where: { id: appointmentId },
+      select: { startsAt: true, status: true },
+    });
+    expect(row.startsAt.toISOString()).toBe(at(14 * 60, FAR).toISOString());
+    expect(row.status).toBe('SCHEDULED');
+
+    const events = await prisma.appointmentEvent.findMany({
+      where: { appointmentId },
+      orderBy: { createdAt: 'asc' },
+      select: { type: true, actorRole: true, source: true },
+    });
+    expect(events.map((event) => event.type)).toEqual(['CREATED', 'RESCHEDULED']);
+    expect(events[1]).toMatchObject({ actorRole: 'PATIENT', source: 'PORTAL' });
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: 'reschedule_appointment', entityId: appointmentId },
+      select: { userId: true, patientId: true, detail: true },
+    });
+    expect(audit).toMatchObject({ userId: fx.patient.id, patientId: fx.patientId });
+    expect(JSON.stringify(audit?.detail)).not.toMatch(/reason|symptom|diagnos/i);
+  });
+
+  it('sends a patient to the phone inside the 48-hour cutoff', async () => {
+    /// Tomorrow morning is in the future but always inside the cutoff. Written straight to the
+    /// table because the booking rules would refuse such short notice in the first place.
+    const tomorrow = addDays(clinicIsoDate(new Date()), 1);
+    const appointment = await prisma.appointment.create({
+      data: {
+        patientId: fx.patientId,
+        practitionerId: fx.practitionerId,
+        appointmentTypeId: fx.typeId,
+        roomId: fx.roomIds[0],
+        startsAt: at(NINE, tomorrow),
+        endsAt: at(NINE + 60, tomorrow),
+        status: 'SCHEDULED',
+      },
+      select: { id: true },
+    });
+    session = fx.patient;
+
+    const result = await portalReschedule(moveForm(appointment.id, at(14 * 60, FAR)));
+    expect(result.error).toContain('call the clinic');
+    expect(result.error).toContain('48');
+
+    const row = await prisma.appointment.findUniqueOrThrow({
+      where: { id: appointment.id },
+      select: { startsAt: true },
+    });
+    expect(row.startsAt.toISOString()).toBe(at(NINE, tomorrow).toISOString());
+    expect(
+      await prisma.appointmentEvent.count({
+        where: { appointmentId: appointment.id, type: 'RESCHEDULED' },
+      }),
+    ).toBe(0);
+  });
+
+  it('will not move, or even offer times for, another patient\u2019s visit', async () => {
+    const appointmentId = await seedFar(fx.otherPatientId);
+    session = fx.patient;
+
+    expect(await portalRescheduleSlots(appointmentId, FAR)).toEqual([]);
+    expect(await portalReschedule(moveForm(appointmentId, at(14 * 60, FAR)))).toEqual({
+      error: 'That appointment is not on your record.',
+    });
+    const row = await prisma.appointment.findUniqueOrThrow({
+      where: { id: appointmentId },
+      select: { startsAt: true },
+    });
+    expect(row.startsAt.toISOString()).toBe(at(NINE, FAR).toISOString());
+  });
+
+  it('offers the time the visit itself holds, and refuses a taken one', async () => {
+    const appointmentId = await seedFar(fx.patientId);
+    session = fx.patient;
+
+    /// The appointment being moved must not block its own slot.
+    const slots = await portalRescheduleSlots(appointmentId, FAR);
+    expect(slots).toContain(at(NINE, FAR).toISOString());
+
+    await prisma.appointment.createMany({
+      data: fx.roomIds.map((roomId) => ({
+        patientId: fx.otherPatientId,
+        practitionerId: fx.practitionerId,
+        appointmentTypeId: fx.typeId,
+        roomId,
+        startsAt: at(14 * 60, FAR),
+        endsAt: at(15 * 60, FAR),
+        status: 'SCHEDULED' as const,
+      })),
+    });
+
+    const result = await portalReschedule(moveForm(appointmentId, at(14 * 60, FAR)));
+    expect(result.error).toBe('That time is no longer available. Pick another.');
+  });
+});
+
+describe('website booking', () => {
+  let firstVisitTypeId: string;
+
+  beforeAll(async () => {
+    const type = await prisma.appointmentType.create({
+      data: {
+        slug: `${TAG}-first`,
+        name: 'First consultation',
+        minutes: 75,
+        publiclyBookable: true,
+        firstVisit: true,
+        practitionerLeadMinutes: 30,
+        practitionerCloseMinutes: 15,
+      },
+      select: { id: true },
+    });
+    firstVisitTypeId = type.id;
+  });
+
+  afterAll(async () => {
+    await prisma.bookingAttempt.deleteMany({ where: { ip: '203.0.113.7' } });
+  });
+
+  function publicForm(startsAt: Date): FormData {
+    const form = new FormData();
+    form.set('firstName', 'Wanda');
+    form.set('lastName', TAG);
+    form.set('dateOfBirth', '1980-04-01');
+    form.set('phone', '555-0100');
+    form.set('email', `wanda@${TAG}.test`);
+    form.set('practitionerId', '');
+    form.set('appointmentTypeId', firstVisitTypeId);
+    form.set('startsAt', startsAt.toISOString());
+    return form;
+  }
+
+  async function bookedFrom(when: Date): Promise<{ status: string; source: string }> {
+    const result = await requestPublicBooking(publicForm(when));
+    if (!result.reference) throw new Error(result.error ?? 'no reference');
+    return prisma.appointment.findFirstOrThrow({
+      where: { startsAt: when, patient: { lastName: TAG } },
+      select: { status: true, source: true },
+    });
+  }
+
+  it('confirms a website visitor\u2019s first consultation as it is booked', async () => {
+    expect(await bookedFrom(at(NINE, FAR))).toEqual({ status: 'SCHEDULED', source: 'PUBLIC' });
+  });
+
+  it('falls back to a request the front desk confirms when the clinic turns that off', async () => {
+    await prisma.schedulingPolicy.update({
+      where: { id: 'default' },
+      data: { publicRequestsAutoConfirm: false },
+    });
+    try {
+      expect(await bookedFrom(at(11 * 60, FAR))).toEqual({
+        status: 'REQUESTED',
+        source: 'PUBLIC',
+      });
+    } finally {
+      await prisma.schedulingPolicy.update({
+        where: { id: 'default' },
+        data: { publicRequestsAutoConfirm: true },
+      });
+    }
   });
 });
 

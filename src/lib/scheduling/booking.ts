@@ -7,9 +7,9 @@ import type {
 } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { recordEvent } from '@/lib/telemetry';
-import { OCCUPYING_STATUSES } from './availability';
+import { activePhaseSelect, activePhases, OCCUPYING_STATUSES } from './availability';
 import { capacityPolicy, schedulingSettings } from './policy';
-import { addMinutes, slotIsOpen } from './slots';
+import { addMinutes, slotIsOpen, type ActivePhases } from './slots';
 import { clinicIsoDate, clinicWeekday, minutesBetween } from './time';
 
 /// Every write to the calendar. The reads live in `availability.ts`; both consult the same
@@ -77,6 +77,7 @@ type SlotContext = {
     endsAt: Date;
     roomId: string | null;
     practitionerId: string;
+    phases: ActivePhases;
   }[];
 };
 
@@ -118,6 +119,7 @@ async function slotContext(
         endsAt: true,
         roomId: true,
         practitionerId: true,
+        appointmentType: { select: activePhaseSelect },
       },
     }),
   ]);
@@ -126,7 +128,11 @@ async function slotContext(
     rooms,
     windows,
     closures,
-    busy: busy.map(({ id, ...rest }) => ({ ...rest, appointmentId: id })),
+    busy: busy.map(({ id, appointmentType, ...rest }) => ({
+      ...rest,
+      appointmentId: id,
+      phases: activePhases(appointmentType),
+    })),
   };
 }
 
@@ -137,7 +143,7 @@ async function validateParties(
   tx: Prisma.TransactionClient,
   request: Pick<BookingRequest, 'patientId' | 'practitionerId' | 'appointmentTypeId'>,
 ): Promise<
-  | { ok: true; minutes: number }
+  | { ok: true; minutes: number; phases: ActivePhases }
   | BookingFailure
 > {
   const [patient, practitioner, appointmentType] = await Promise.all([
@@ -151,7 +157,7 @@ async function validateParties(
     }),
     tx.appointmentType.findUnique({
       where: { id: request.appointmentTypeId },
-      select: { id: true, minutes: true, active: true },
+      select: { id: true, minutes: true, active: true, ...activePhaseSelect },
     }),
   ]);
 
@@ -167,7 +173,7 @@ async function validateParties(
   }
   if (appointmentType.minutes <= 0) return fail('That visit type has no length set.');
 
-  return { ok: true, minutes: appointmentType.minutes };
+  return { ok: true, minutes: appointmentType.minutes, phases: activePhases(appointmentType) };
 }
 
 type EventInput = {
@@ -221,7 +227,7 @@ export async function bookAppointment(request: BookingRequest): Promise<BookingR
     }
 
     const check = slotIsOpen(
-      { startsAt: request.startsAt, endsAt },
+      { startsAt: request.startsAt, endsAt, phases: parties.phases },
       {
         windows: context.windows,
         practitionerId: request.practitionerId,
@@ -354,7 +360,7 @@ export async function rescheduleAppointment(request: RescheduleRequest): Promise
     if (context.windows.length === 0) return fail('That practitioner does not work then.');
 
     const check = slotIsOpen(
-      { startsAt: request.startsAt, endsAt },
+      { startsAt: request.startsAt, endsAt, phases: parties.phases },
       {
         windows: context.windows,
         practitionerId,

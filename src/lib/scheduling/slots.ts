@@ -23,7 +23,19 @@ export const DEFAULT_SLOT_STEP_MINUTES = 15;
 
 export type Interval = { startsAt: Date; endsAt: Date };
 
-export type Busy = Interval & {
+/// The stretches of a visit the practitioner has to be in the room for, measured from its
+/// start and back from its end. The clinic's answer is 15 and 15 for a treatment and 30 and 15
+/// for a first consultation: the middle of a visit is retention, when the practitioner can be
+/// starting somebody else. Nulls mean the whole visit, which is the conservative reading.
+export type ActivePhases = { leadMinutes: number | null; closeMinutes: number | null };
+
+export const WHOLE_VISIT: ActivePhases = { leadMinutes: null, closeMinutes: null };
+
+/// An interval that may know which of its minutes need the practitioner. Both a candidate slot
+/// and an already-booked visit are one of these, and they are compared phase against phase.
+export type Occupied = Interval & { phases?: ActivePhases };
+
+export type Busy = Occupied & {
   roomId?: string | null;
   practitionerId?: string | null;
   /// Excluded from conflict checks so an appointment being rescheduled or moved does not
@@ -36,19 +48,15 @@ export type WorkingWindow = { startMinute: number; endMinute: number };
 /// The clinic's capacity rules. Rooms and practitioners are counted separately because they
 /// are different constraints: a full clinic and a busy practitioner are different problems.
 export type CapacityPolicy = {
-  /// How many appointments one practitioner may have running at the same moment. 1 is the
-  /// conservative default; see `SchedulingPolicy` in the schema for why.
+  /// How many appointments' *active phases* one practitioner may have running at the same
+  /// moment. 1 is the clinic's real rule — nobody is in two rooms at once — and staggering
+  /// comes from the phases, not from raising this.
   maxConcurrentPerPractitioner: number;
-  /// When set, only the first N minutes of a visit are treated as needing the practitioner,
-  /// which is what makes 15-minute staggering possible. When null, the whole appointment
-  /// counts, which is the conservative reading.
-  practitionerActiveMinutes: number | null;
   slotStepMinutes: number;
 };
 
 export const CONSERVATIVE_POLICY: CapacityPolicy = {
   maxConcurrentPerPractitioner: 1,
-  practitionerActiveMinutes: null,
   slotStepMinutes: DEFAULT_SLOT_STEP_MINUTES,
 };
 
@@ -63,14 +71,20 @@ function isSelf(entry: Busy, ignoreAppointmentId?: string): boolean {
   return ignoreAppointmentId !== undefined && entry.appointmentId === ignoreAppointmentId;
 }
 
-/// The stretch of a visit during which the practitioner is considered occupied. With no active
-/// window configured that is the whole visit; with one it is the opening minutes, so a
-/// practitioner can start the next patient while the needles are retained on the last.
-export function practitionerWindow(slot: Interval, policy: CapacityPolicy): Interval {
-  const active = policy.practitionerActiveMinutes;
-  if (active === null || active <= 0) return slot;
-  const capped = Math.min(active, minutesBetween(slot.startsAt, slot.endsAt));
-  return { startsAt: slot.startsAt, endsAt: addMinutes(slot.startsAt, capped) };
+/// The stretches of a visit during which the practitioner is considered occupied: the opening
+/// phase and the closing phase, with the retention between them free. With no phases declared
+/// — or phases that between them cover the visit — it is the whole appointment.
+export function practitionerWindows(slot: Occupied): Interval[] {
+  const whole = { startsAt: slot.startsAt, endsAt: slot.endsAt };
+  const total = minutesBetween(slot.startsAt, slot.endsAt);
+  const lead = Math.max(0, slot.phases?.leadMinutes ?? 0);
+  const close = Math.max(0, slot.phases?.closeMinutes ?? 0);
+  if (lead + close === 0 || lead + close >= total) return [whole];
+
+  const windows: Interval[] = [];
+  if (lead > 0) windows.push({ startsAt: slot.startsAt, endsAt: addMinutes(slot.startsAt, lead) });
+  if (close > 0) windows.push({ startsAt: addMinutes(slot.endsAt, -close), endsAt: slot.endsAt });
+  return windows;
 }
 
 /// Every start on the clinic's grid that fits a visit of `minutes` inside one of the day's
@@ -140,17 +154,19 @@ export function roomFree(
 /// Whether the practitioner has capacity left at that time under the configured policy.
 export function practitionerFree(
   practitionerId: string,
-  slot: Interval,
+  slot: Occupied,
   busy: Busy[],
   policy: CapacityPolicy = CONSERVATIVE_POLICY,
   ignoreAppointmentId?: string,
 ): boolean {
-  const wanted = practitionerWindow(slot, policy);
+  const wanted = practitionerWindows(slot);
   const concurrent = busy.filter(
     (entry) =>
       entry.practitionerId === practitionerId &&
       !isSelf(entry, ignoreAppointmentId) &&
-      overlaps(practitionerWindow(entry, policy), wanted),
+      practitionerWindows(entry).some((busyWindow) =>
+        wanted.some((wantedWindow) => overlaps(busyWindow, wantedWindow)),
+      ),
   ).length;
   return concurrent < Math.max(1, policy.maxConcurrentPerPractitioner);
 }
@@ -158,6 +174,8 @@ export function practitionerFree(
 export type SlotOptions = {
   isoDate: string;
   minutes: number;
+  /// The visit type's practitioner-active phases, which is what allows quarter-hour starts.
+  phases?: ActivePhases;
   windows: WorkingWindow[];
   practitionerId: string;
   rooms: { id: string }[];
@@ -180,6 +198,7 @@ export function bookableSlots(options: SlotOptions): Slot[] {
   const {
     isoDate,
     minutes,
+    phases = WHOLE_VISIT,
     windows,
     practitionerId,
     rooms,
@@ -194,7 +213,7 @@ export function bookableSlots(options: SlotOptions): Slot[] {
   const earliest = now ? addMinutes(now, minNoticeMinutes) : null;
 
   return candidateStarts(isoDate, windows, minutes, policy).flatMap((startsAt) => {
-    const slot = { startsAt, endsAt: addMinutes(startsAt, minutes) };
+    const slot = { startsAt, endsAt: addMinutes(startsAt, minutes), phases };
     if (earliest && slot.startsAt < earliest) return [];
     if (closures.some((closure) => overlaps(closure, slot))) return [];
     if (!practitionerFree(practitionerId, slot, busy, policy, ignoreAppointmentId)) return [];
@@ -241,8 +260,8 @@ function refuse(rejection: SlotRejection): SlotCheck {
 /// inside the write transaction, because the slot list a browser is looking at is a snapshot
 /// and two people can want the same 3pm.
 export function slotIsOpen(
-  requested: Interval,
-  options: Omit<SlotOptions, 'isoDate' | 'minutes'> & { roomId?: string | null },
+  requested: Occupied,
+  options: Omit<SlotOptions, 'isoDate' | 'minutes' | 'phases'> & { roomId?: string | null },
 ): SlotCheck {
   const {
     windows,

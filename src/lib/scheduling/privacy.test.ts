@@ -76,6 +76,7 @@ describe('the calendar holds no health information', () => {
       'email',
       'decoy',
       'patientId',
+      'appointmentId',
       'appointmentTypeId',
       'practitionerId',
       'startsAt',

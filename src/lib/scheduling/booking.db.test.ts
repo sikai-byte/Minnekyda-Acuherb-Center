@@ -407,6 +407,78 @@ describe('bookAppointment', () => {
   });
 });
 
+describe('staggered practitioner phases', () => {
+  /// The clinic's actual working model: needles in for the first quarter hour, retention in
+  /// the middle, needles out at the end, which is what lets one practitioner run rooms in
+  /// parallel on quarter-hour starts. The phases live on the visit type, so this test turns
+  /// them on for its own type and puts them back afterwards.
+  beforeEach(async () => {
+    await prisma.appointmentType.update({
+      where: { id: fx.treatmentTypeId },
+      data: { practitionerLeadMinutes: 15, practitionerCloseMinutes: 15 },
+    });
+    await prisma.appointmentType.update({
+      where: { id: fx.firstVisitTypeId },
+      data: { practitionerLeadMinutes: 30, practitionerCloseMinutes: 15 },
+    });
+  });
+
+  afterAll(async () => {
+    await prisma.appointmentType.updateMany({
+      where: { slug: { startsWith: TAG } },
+      data: { practitionerLeadMinutes: null, practitionerCloseMinutes: null },
+    });
+  });
+
+  it('lets the same practitioner start the next patient a quarter hour later', async () => {
+    expect(await book()).toMatchObject({ ok: true });
+    expect(
+      await book({ patientId: fx.otherPatientId, startsAt: at(DAY, NINE + 15) }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('still refuses a start that wants the practitioner mid-phase', async () => {
+    expect(await book()).toMatchObject({ ok: true });
+    /// 09:45 is when the first patient's needles come out.
+    expect(
+      await book({ patientId: fx.otherPatientId, startsAt: at(DAY, NINE + 45) }),
+    ).toMatchObject({ ok: false });
+  });
+
+  it('holds the longer opening of a first consultation clear', async () => {
+    expect(await book({ appointmentTypeId: fx.firstVisitTypeId })).toMatchObject({ ok: true });
+    expect(
+      await book({ patientId: fx.otherPatientId, startsAt: at(DAY, NINE + 15) }),
+    ).toMatchObject({ ok: false });
+    expect(
+      await book({ patientId: fx.otherPatientId, startsAt: at(DAY, NINE + 30) }),
+    ).toMatchObject({ ok: true });
+  });
+
+  it('offers the staggered starts through the availability service too', async () => {
+    expect(await book()).toMatchObject({ ok: true });
+    const slots = await getAvailableSlots({
+      practitionerId: fx.practitionerId,
+      appointmentTypeId: fx.treatmentTypeId,
+      date: DAY,
+    });
+    const offered = slots.map((slot) => slot.startsAt.toISOString());
+    expect(offered).toContain(at(DAY, NINE + 15).toISOString());
+    expect(offered).not.toContain(at(DAY, NINE + 45).toISOString());
+  });
+
+  it('gives each staggered patient a room of their own', async () => {
+    const first = await book();
+    const second = await book({ patientId: fx.otherPatientId, startsAt: at(DAY, NINE + 15) });
+    if (!first.ok || !second.ok) throw new Error('staggered bookings failed');
+    const rooms = await prisma.appointment.findMany({
+      where: { id: { in: [first.appointmentId, second.appointmentId] } },
+      select: { roomId: true },
+    });
+    expect(new Set(rooms.map((row) => row.roomId)).size).toBe(2);
+  });
+});
+
 describe('concurrency', () => {
   it('does not overbook the last room when two requests arrive together', async () => {
     /// Two of the three rooms are already occupied by other practitioners, so exactly one
@@ -871,7 +943,7 @@ describe('getAvailableSlots', () => {
     expect(busy.length).toBeGreaterThan(0);
     for (const entry of busy) {
       expect(Object.keys(entry).sort()).toEqual(
-        ['appointmentId', 'endsAt', 'practitionerId', 'roomId', 'startsAt'].sort(),
+        ['appointmentId', 'endsAt', 'phases', 'practitionerId', 'roomId', 'startsAt'].sort(),
       );
     }
   });

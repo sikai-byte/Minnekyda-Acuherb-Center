@@ -92,14 +92,16 @@ click-accept BAA.
   into the text columns; signing sets `signedAt` and freezes the row. Corrections are a new row
   pointing back through `amendsId`, never an edit.
 - **`AppointmentType`** — a bookable visit type and the *only* place a duration comes from:
-  `minutes`, `publiclyBookable`, and `firstVisit` (the only kind a stranger may book on the
-  website). No client ever submits a length.
+  `minutes`, `publiclyBookable`, `firstVisit` (the only kind a stranger may book on the website),
+  and the practitioner-active phases `practitionerLeadMinutes` / `practitionerCloseMinutes`. No
+  client ever submits a length.
 - **`TreatmentRoom`** — a treatment table. The count of active rooms is the ceiling on
   concurrent visits.
 - **`PractitionerAvailability`** / **`ClinicClosure`** — a practitioner's weekly working minutes,
   and closures (clinic-wide when `practitionerId` is null, otherwise one practitioner's time off).
 - **`SchedulingPolicy`** — the single configurable row: start increment, booking horizon, minimum
-  notice, and the practitioner concurrency policy.
+  notice, the patient self-cancel and self-reschedule windows, whether website bookings confirm
+  themselves, and the practitioner concurrency ceiling.
 - **`Appointment`** — patient, practitioner, appointment type, room, start, end, status
   (`REQUESTED` → `SCHEDULED` → `CHECKED_IN` → `COMPLETED`, or `CANCELLED` / `NO_SHOW`), `source`
   (`STAFF` / `PORTAL` / `PUBLIC`) and the lifecycle timestamps. Scheduling logistics only, by
@@ -190,13 +192,16 @@ clinic day ends at the next local midnight rather than 24 hours later, the sprin
 rejected as a start time because it does not exist, and the repeated fall-back hour resolves to
 its first occurrence.
 
-**Room occupancy and practitioner capacity are separate.** A slot needs a free room *and* a
-practitioner within their concurrency policy. That policy is configurable
-(`SchedulingPolicy.maxConcurrentPerPractitioner`, plus an optional practitioner-active window) and
-ships deliberately conservative at one visit at a time, because which phases of a 60-minute
-treatment actually need the practitioner in the room has not been defined yet — see
-[Follow-ups for the clinic](#follow-ups-for-the-clinic). Raising it is a row edit, not a code
-change.
+**Room occupancy and practitioner capacity are separate.** A room is held for the whole visit; the
+practitioner is only needed for part of it. Each `AppointmentType` declares those parts —
+`practitionerLeadMinutes` and `practitionerCloseMinutes` — and the clinic's are 15 and 15 on a
+60-minute treatment and 30 and 15 on a 75-minute first consultation. The stretch between them is
+retention, when the practitioner is free to start someone else, and it is what makes quarter-hour
+staggering work: a 9:00 treatment and a 9:15 treatment can share a practitioner, while 9:45 cannot,
+because the first patient's needles come out then. Leaving both columns null counts the whole visit
+as practitioner time, which is the conservative fallback for any new visit type.
+`SchedulingPolicy.maxConcurrentPerPractitioner` (1 today) is a separate ceiling on genuinely
+simultaneous work. All of it is row data, not code.
 
 **Writes re-check and lock.** Every write in `src/lib/scheduling/booking.ts` re-runs the same
 rules inside its transaction under a per-clinic-day advisory lock, because a browser is always
@@ -219,23 +224,28 @@ even for a patient's own visit.
   completed, cancelled, no-shows, first vs returning visits, fill rate, attendance rates,
   practitioner and room utilisation, and where the week is still open.
 - **Patients** (`/portal/appointments`) book for themselves with two hours' notice, one future
-  visit at a time, and cancel outside 24 hours. The patient id comes from the session, so no id in
-  a request can point at anyone else.
+  visit at a time, move a visit themselves outside 48 hours, and cancel outside 24 hours. Inside
+  those windows the portal says to call the clinic rather than offering a button that would fail. A
+  self-reschedule keeps the same visit row, practitioner and visit type — the patient chooses only
+  the time, from the same availability service staff use — so the history stays continuous. The
+  patient id comes from the session, so no id in a request can point at anyone else.
 - **The public** (`/book`) is the front door for a first-time consultation, and it is the only
   unauthenticated write in the product. It reads no chart — never looking anyone up by name, email
   or date of birth — so it cannot be asked a question whose answer reveals whether somebody is a
   patient here; a returning visitor simply produces a second chart for the front desk to merge. It
   takes identity and contact details only, throttles by source address (5/hour, 20/day), offers
-  only first-visit services, and lands as a `REQUESTED` appointment that holds the room until the
-  front desk confirms it. The confirmation screen shows a six-character reference, not a row id.
+  only first-visit services, and books the visit outright: someone who picked a time has an
+  appointment, and the screen tells them so. Setting `SchedulingPolicy.publicRequestsAutoConfirm`
+  to false returns to `REQUESTED`, where the room is still held but the front desk confirms it. The
+  confirmation screen shows a six-character reference, not a row id.
 
 No confirmation email or SMS is sent yet: that needs a BAA'd provider, and even then would carry
 the time and the clinic's name only.
 
 **Known limitations.**
 
-- The practitioner concurrency policy is conservative, so the schedule currently offers less than
-  the clinic's staggered model can really absorb.
+- Practitioner phases are per visit type, not per practitioner: a faster or slower clinician cannot
+  yet be modelled separately.
 - A practitioner change is available through a reschedule, not as a standalone action.
 - The public door creates a second chart for a returning visitor to merge, deliberately: looking
   anyone up by name or date of birth would answer "is this person a patient here" to a stranger.
@@ -245,14 +255,12 @@ the time and the clinic's name only.
 
 **Follow-ups for the clinic.**
 
-1. Which phases of a 60- and 75-minute treatment need the practitioner present? That answer sets
-   `maxConcurrentPerPractitioner` and the practitioner-active window, and is the difference
-   between today's conservative schedule and the real staggered model.
-2. Should a website request auto-confirm, or keep holding the room until the front desk confirms
-   it? It holds today.
-3. Cancellation window and minimum notice for patients (24 hours and 2 hours today), and whether
-   a patient may hold more than one future visit (one today).
-4. Whether patients should be able to reschedule themselves, rather than cancel and rebook.
+1. Whether the 15/15 and 30/15 practitioner phases hold on a busy day, or want a margin between
+   one patient's needles out and the next patient's in.
+2. Minimum notice for patient self-booking (2 hours today) and whether a patient may hold more than
+   one future visit (one today).
+3. What the front desk should see when a website booking lands, now that it is confirmed rather
+   than queued for review.
 
 ## Local development
 

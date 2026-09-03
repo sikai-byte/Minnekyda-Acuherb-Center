@@ -30,8 +30,8 @@ export default async function PortalAppointmentsPage() {
         id: true,
         startsAt: true,
         status: true,
-        appointmentType: { select: { name: true, minutes: true } },
-        practitioner: { select: { name: true, credentials: true } },
+        appointmentType: { select: { id: true, name: true, minutes: true } },
+        practitioner: { select: { id: true, name: true, credentials: true } },
       },
     }),
     prisma.appointment.findMany({
@@ -42,8 +42,8 @@ export default async function PortalAppointmentsPage() {
         id: true,
         startsAt: true,
         status: true,
-        appointmentType: { select: { name: true } },
-        practitioner: { select: { name: true } },
+        appointmentType: { select: { id: true, name: true, minutes: true } },
+        practitioner: { select: { id: true, name: true } },
       },
     }),
     bookableAppointmentTypes('portal'),
@@ -67,8 +67,8 @@ export default async function PortalAppointmentsPage() {
       <header className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight">My appointments</h1>
         <p className="mt-1 text-sm text-clay-600">
-          Book, check or cancel a visit. Cancellations inside {settings.selfCancelNoticeHours} hours
-          need a phone call.
+          Book, move or cancel a visit. Changes inside {settings.selfRescheduleNoticeHours} hours
+          and cancellations inside {settings.selfCancelNoticeHours} hours need a phone call.
         </p>
       </header>
 
@@ -78,7 +78,11 @@ export default async function PortalAppointmentsPage() {
           {upcoming.length === 0 ? (
             <p className="text-sm text-clay-600">Nothing booked.</p>
           ) : (
-            <UpcomingAppointments appointments={upcoming} />
+            <UpcomingAppointments
+              appointments={upcoming}
+              rescheduleNoticeHours={settings.selfRescheduleNoticeHours}
+              horizonDays={settings.bookingHorizonDays}
+            />
           )}
         </section>
 

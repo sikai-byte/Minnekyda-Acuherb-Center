@@ -159,6 +159,12 @@ model AppointmentType {
   /// everything else is portal or front desk.
   publiclyBookable Boolean  @default(false)
   firstVisit       Boolean  @default(false)
+  /// The minutes at the start and at the end of the visit that need the practitioner in the
+  /// room: 15 and 15 for a treatment, 30 and 15 for a first consultation. The stretch between
+  /// them is retention, when the practitioner can be starting another patient, and it is what
+  /// makes the clinic's quarter-hour staggering work. Null on both counts the whole visit.
+  practitionerLeadMinutes  Int?
+  practitionerCloseMinutes Int?
   active           Boolean  @default(true)
   createdAt        DateTime @default(now())
 
@@ -184,26 +190,25 @@ model TreatmentRoom {
   @@index([active, position])
 }
 
-/// The clinic's capacity rules, as data rather than constants, because the real staggered model
-/// is not settled yet. One row, `id = "default"`.
+/// The clinic's scheduling rules, as data rather than constants so they can be changed without
+/// a deploy. One row, `id = "default"`.
 ///
-/// `maxConcurrentPerPractitioner` starts at 1 — the conservative reading, one patient at a time
-/// — deliberately: the clinic staggers arrivals across five rooms, and a practitioner plausibly
-/// oversees several treatments at once, but which minutes of a 60-minute treatment need the
-/// practitioner in the room is a clinical question nobody has answered yet. Raising this number
-/// is a settings change, not a rewrite. `practitionerActiveMinutes`, when set, is the answer to
-/// that question: only the first N minutes of a visit are treated as needing the practitioner,
-/// which is what actually lets 15-minute staggering work.
+/// `maxConcurrentPerPractitioner` is 1 because a practitioner cannot be in two rooms at once.
+/// Overlap comes from `AppointmentType`'s active phases instead: a practitioner is free during
+/// another patient's retention, so quarter-hour starts fit under a limit of one.
 model SchedulingPolicy {
   id                           String   @id @default("default")
   maxConcurrentPerPractitioner Int      @default(1)
-  practitionerActiveMinutes    Int?
   slotStepMinutes              Int      @default(15)
   /// How much warning a patient booking themselves has to give, and how much notice they must
-  /// give to cancel without phoning.
+  /// give to cancel or move a visit without phoning.
   selfBookingNoticeMinutes     Int      @default(120)
   selfCancelNoticeHours        Int      @default(24)
+  selfRescheduleNoticeHours    Int      @default(48)
   bookingHorizonDays           Int      @default(60)
+  /// Website requests are confirmed as they are made. When false they land as REQUESTED,
+  /// holding the room until the front desk confirms them.
+  publicRequestsAutoConfirm    Boolean  @default(true)
   updatedAt                    DateTime @updatedAt
 }
 
