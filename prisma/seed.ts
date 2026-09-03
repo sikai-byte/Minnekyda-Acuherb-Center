@@ -75,6 +75,43 @@ const TEMPLATES: { name: string; description: string; presets: StructuredNote }[
   },
 ];
 
+/// The clinic's five treatment rooms. Room count is the hard ceiling on how many visits can
+/// overlap, so it is data rather than a constant: adding a room is a seed edit, not a deploy.
+const ROOMS = ['Room 1', 'Room 2', 'Room 3', 'Room 4', 'Room 5'];
+
+/// Visit types. The first consultation is longer because the intake and the treatment happen
+/// in the same appointment, and it is the only thing a stranger may book on the website.
+const SERVICES = [
+  {
+    slug: 'first-consultation',
+    name: 'First consultation & treatment',
+    description: 'Your first visit: health history, diagnosis and a full treatment.',
+    minutes: 75,
+    publiclyBookable: true,
+    firstVisit: true,
+  },
+  {
+    slug: 'acupuncture-treatment',
+    name: 'Acupuncture treatment',
+    description: 'A standard return visit.',
+    minutes: 60,
+    publiclyBookable: true,
+    firstVisit: false,
+  },
+];
+
+/// Clinic hours, as minutes from midnight, Monday to Saturday. Times throughout the app are
+/// handled in UTC, so these are clinic-local hours only once the deployment's timezone is
+/// set — see the scheduling section of the README.
+const CLINIC_HOURS: { weekday: number; startMinute: number; endMinute: number }[] = [
+  { weekday: 1, startMinute: 9 * 60, endMinute: 17 * 60 },
+  { weekday: 2, startMinute: 9 * 60, endMinute: 17 * 60 },
+  { weekday: 3, startMinute: 9 * 60, endMinute: 17 * 60 },
+  { weekday: 4, startMinute: 9 * 60, endMinute: 17 * 60 },
+  { weekday: 5, startMinute: 9 * 60, endMinute: 17 * 60 },
+  { weekday: 6, startMinute: 9 * 60, endMinute: 13 * 60 },
+];
+
 async function main() {
   const passwordHash = await bcrypt.hash(DEV_PASSWORD, 10);
   for (const member of STAFF) {
@@ -114,7 +151,34 @@ async function main() {
     }
   }
 
-  console.log(`Seeded ${STAFF.length} staff users, intake form v${minnekydaIntakeV1.version}, ${TEMPLATES.length} note templates.`);
+  for (const name of ROOMS) {
+    await prisma.room.upsert({ where: { name }, update: { active: true }, create: { name } });
+  }
+
+  for (const service of SERVICES) {
+    await prisma.service.upsert({
+      where: { slug: service.slug },
+      update: { ...service, active: true },
+      create: { ...service, active: true },
+    });
+  }
+
+  /// Working hours belong to a practitioner, not the clinic, so a second practitioner can keep
+  /// different days without touching anyone else's calendar.
+  const practitioner = await prisma.user.findUnique({
+    where: { email: 'practitioner@minnekyda.test' },
+    select: { id: true },
+  });
+  if (practitioner) {
+    await prisma.availabilityRule.deleteMany({ where: { practitionerId: practitioner.id } });
+    await prisma.availabilityRule.createMany({
+      data: CLINIC_HOURS.map((hours) => ({ ...hours, practitionerId: practitioner.id })),
+    });
+  }
+
+  console.log(
+    `Seeded ${STAFF.length} staff users, intake form v${minnekydaIntakeV1.version}, ${TEMPLATES.length} note templates, ${ROOMS.length} rooms, ${SERVICES.length} services.`,
+  );
 }
 
 main()
