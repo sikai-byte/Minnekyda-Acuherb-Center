@@ -1,4 +1,5 @@
 import Link from 'next/link';
+import { BrandWordmark } from '@/components/Brand';
 import { PublicBooking } from '@/components/schedule/PublicBooking';
 import { bookableAppointmentTypes, bookablePractitioners } from '@/lib/scheduling/availability';
 import { schedulingSettings } from '@/lib/scheduling/policy';
@@ -21,9 +22,7 @@ export default async function PublicBookingPage() {
     <div className="min-h-screen">
       <header className="border-b border-clay-200 bg-white">
         <div className="mx-auto flex max-w-3xl items-center justify-between gap-4 px-4 py-3">
-          <span className="text-lg font-semibold tracking-tight text-clay-900">
-            Minnekyda <span className="text-moss-600">Acuherb</span>
-          </span>
+          <BrandWordmark />
           <Link href="/login" className="btn-ghost text-sm">
             Already a patient? Sign in
           </Link>
