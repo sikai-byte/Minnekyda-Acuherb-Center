@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requireIntakeAccess, requireUser } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { recordEvent } from '@/lib/telemetry';
 import { getKioskSession, getSession } from '@/lib/session';
 import { kioskPath } from '@/lib/kiosk';
 import type { IntakeSchema, SignatureValue } from '@/lib/intake/types';
@@ -44,6 +45,13 @@ export async function startIntake(patientId: string): Promise<void> {
     entity: 'IntakeSubmission',
     entityId: submission.id,
     patientId,
+  });
+
+  await recordEvent({
+    type: 'INTAKE_STARTED',
+    patientId,
+    userId: user.id,
+    submissionId: submission.id,
   });
 
   /// Handing the iPad to the patient: the staff session is destroyed on this device and
@@ -139,6 +147,16 @@ export async function saveIntake(
         formVersion: submission.form.version,
         submittedBy: 'patient on kiosk',
       },
+    });
+
+    /// How long the patient spent on the iPad, which is the number that replaces the clinic's
+    /// estimate of an hour per chart of preparing and re-typing paper.
+    await recordEvent({
+      type: 'INTAKE_SUBMITTED',
+      since: submission.createdAt,
+      patientId: submission.patientId,
+      userId: submission.startedById,
+      submissionId,
     });
     revalidatePath(`/patients/${submission.patientId}`);
   }

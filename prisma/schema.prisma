@@ -229,6 +229,56 @@ model BookingAttempt {
   @@index([ip, createdAt])
 }
 
+/// The measurements the clinic wants to prove: how long paperwork takes, how long a note takes,
+/// how full the rooms are, how much front-desk time the platform gives back. Most of those are
+/// durations between two moments, and a duration cannot be reconstructed after the fact, so the
+/// moments are recorded as they happen.
+enum ClinicEventType {
+  INTAKE_STARTED
+  INTAKE_SUBMITTED
+  /// The practitioner opened a blank or draft note. There is no note row yet at that point,
+  /// which is why the moment needs recording here.
+  NOTE_STARTED
+  NOTE_SIGNED
+  APPOINTMENT_BOOKED
+  APPOINTMENT_CHECKED_IN
+  APPOINTMENT_COMPLETED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_NO_SHOW
+}
+
+/// Timing telemetry, deliberately separate from `AuditLog`: the audit trail answers "who saw
+/// this chart" and must never be pruned, while these rows are aggregate operations data.
+///
+/// Carries identifiers and durations only — no answers, no note text, no free text of any kind,
+/// and no foreign keys, so a chart can be deleted for retention without erasing the clinic's
+/// operating history. `ClinicEvent` is the only table in the schema that outlives a patient row,
+/// and it can do that precisely because there is nothing clinical in it.
+model ClinicEvent {
+  id             String          @id @default(cuid())
+  type           ClinicEventType
+  occurredAt     DateTime        @default(now())
+  /// Set when the event closes an interval the clinic wants to measure, so the reports do not
+  /// have to re-pair rows at read time.
+  durationMs     Int?
+  patientId      String?
+  userId         String?
+  appointmentId  String?
+  submissionId   String?
+  noteId         String?
+  serviceId      String?
+  roomId         String?
+  /// Which door a booking came through, which is what turns into front-desk minutes saved.
+  source         BookingSource?
+  /// The visit's scheduled length, copied in so utilisation can be totalled from events alone
+  /// even after a service is renamed or retired.
+  minutes        Int?
+
+  @@index([type, occurredAt])
+  @@index([occurredAt])
+  @@index([patientId, occurredAt])
+}
+
 /// A versioned intake questionnaire. Editing a live form creates a new version
 /// so that historical submissions always render against the schema they were signed under.
 model IntakeForm {

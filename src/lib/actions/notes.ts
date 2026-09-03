@@ -6,6 +6,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requireRole, CLINICAL_ROLES } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { lastEventAt, recordEvent } from '@/lib/telemetry';
 import { composeNoteText, isStructuredNote, type StructuredNote } from '@/lib/notes/structure';
 
 const noteSchema = z.object({
@@ -91,6 +92,8 @@ export async function createNote(
     patientId,
   });
 
+  if (sign) await recordSigned(note.id, patientId, user.id);
+
   revalidatePath(`/patients/${patientId}`);
   redirect(`/notes/${note.id}`);
 }
@@ -133,8 +136,27 @@ export async function updateNote(
     patientId: existing.patientId,
   });
 
+  if (sign) await recordSigned(noteId, existing.patientId, user.id, noteId);
+
   revalidatePath(`/patients/${existing.patientId}`);
   redirect(`/notes/${noteId}`);
+}
+
+/// Closes two intervals the clinic asked to see: how long the note itself took, and — paired
+/// with the appointment's completion in the reports — how long after the visit it was signed.
+async function recordSigned(
+  noteId: string,
+  patientId: string,
+  userId: string,
+  startedAsNoteId?: string,
+): Promise<void> {
+  await recordEvent({
+    type: 'NOTE_SIGNED',
+    since: await lastEventAt('NOTE_STARTED', { userId, patientId, noteId: startedAsNoteId }),
+    noteId,
+    patientId,
+    userId,
+  });
 }
 
 /// Signed notes are immutable, so an amendment is a fresh draft that points back at the

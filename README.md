@@ -17,8 +17,9 @@ entered anywhere hosted until the hosting BAA is signed (see [Before real patien
 | Staff accounts, roles, MFA, audit log | **Built** | `src/app/admin`, `src/lib/actions/staff.ts`, `src/lib/audit.ts` |
 | Patient portal (own paperwork and visit dates only) | **Built** | `src/app/portal`, `src/lib/portalScope.ts` |
 | Scheduling: staff calendar, portal booking, public website booking | **Built** | `src/app/schedule`, `src/app/book`, `src/lib/scheduling`, `src/lib/actions/appointments.ts` |
+| Operational telemetry and the operations report | **Built** | `src/lib/telemetry.ts`, `src/lib/metrics`, `src/app/admin/metrics` |
 | Payments and Stripe reconciliation | **Not built** | — |
-| Reporting (visits, weekly occupancy) | **Not built** | — |
+| Reporting (visits, weekly occupancy) | **Partly built** — operations report exists; the weekly capacity report does not | `src/app/admin/metrics` |
 | Insurance billing | **Out of scope** for now, planned later | — |
 | Scanning historical paper charts | **Out of scope** for now, planned later | — |
 | Deployment / hosting | **Not done** — runs locally only | — |
@@ -36,6 +37,22 @@ Deliberate product decisions, so nobody re-litigates them by accident:
   confirmation screen holds a symptom, a reason for the visit or a comment — the health history is
   taken privately on the iPad at the visit. `src/lib/scheduling/privacy.test.ts` fails the build if
   a clinical column or a free-text box appears in the booking path.
+
+## What the operations report measures, and what it only estimates
+
+Admin-only, at `/admin/metrics`. Every clinical action writes a `ClinicEvent` row — event type,
+timestamps, and ids, never an answer or a word of a note, asserted by
+`src/lib/metrics/privacy.test.ts`. Timings therefore start the day the feature shipped and cannot
+be backfilled, which is why the capture landed before the dashboard.
+
+Measured: intake time on the iPad, time to write a note, visit → signed note, practitioner and
+room utilisation, no-show rate, share of visits patients booked themselves.
+
+Estimated, and labelled as such wherever shown: transcription time avoided and front-desk time
+returned. Both multiply a count by the clinic's own stated minutes for the paper process — 10
+minutes preparing a form plus 50 re-typing it, and 15 minutes per visit at the desk for check-in,
+rebooking and payment. The figures live in `src/lib/metrics/baselines.ts`; change them there and
+every report follows.
 
 ## Clinic rules the software encodes
 

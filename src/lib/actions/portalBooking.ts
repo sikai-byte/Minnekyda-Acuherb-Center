@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requirePatient } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { recordEvent } from '@/lib/telemetry';
 import {
   SELF_BOOKING_NOTICE_MINUTES,
   bookAppointment,
@@ -118,6 +119,14 @@ export async function portalCancel(appointmentId: string): Promise<PortalBooking
     entityId: appointment.id,
     patientId,
     detail: { source: 'PORTAL' },
+  });
+
+  await recordEvent({
+    type: 'APPOINTMENT_CANCELLED',
+    patientId,
+    userId: user.id,
+    appointmentId: appointment.id,
+    source: 'PORTAL',
   });
 
   revalidatePath('/portal/appointments');
