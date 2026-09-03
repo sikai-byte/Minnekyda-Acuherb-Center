@@ -1,8 +1,8 @@
 # Minnekyda Acuherb Center
 
 Clinic platform for a single-site Traditional Chinese Medicine practice. It replaces the paper
-new-patient packet in the filing cabinet and the typed visit note, and it is on its way to
-replacing Acuity for scheduling and to reporting on the clinic's Stripe payments.
+new-patient packet in the filing cabinet, the typed visit note and Acuity's booking, and it is on
+its way to reporting on the clinic's Stripe payments.
 
 Everything in here is treated as PHI. Nothing is deployed, and no real patient data may be
 entered anywhere hosted until the hosting BAA is signed (see [Before real patients](#before-real-patients)).
@@ -16,7 +16,7 @@ entered anywhere hosted until the hosting BAA is signed (see [Before real patien
 | Patient charts and demographics | **Built** | `src/app/patients` |
 | Staff accounts, roles, MFA, audit log | **Built** | `src/app/admin`, `src/lib/actions/staff.ts`, `src/lib/audit.ts` |
 | Patient portal (own paperwork and visit dates only) | **Built** | `src/app/portal`, `src/lib/portalScope.ts` |
-| Scheduling / booking (replaces Acuity) | **Not built** | — |
+| Scheduling: staff calendar, portal booking, public website booking | **Built** | `src/app/schedule`, `src/app/book`, `src/lib/scheduling`, `src/lib/actions/appointments.ts` |
 | Payments and Stripe reconciliation | **Not built** | — |
 | Reporting (visits, weekly occupancy) | **Not built** | — |
 | Insurance billing | **Out of scope** for now, planned later | — |
@@ -32,6 +32,10 @@ Deliberate product decisions, so nobody re-litigates them by accident:
   "Office visit — 60 min". Stripe will not sign a BAA, so this is a hard design rule.
 - **Hidden navigation is not access control.** Every route and every server action is guarded
   server-side, and `src/lib/authz.test.ts` fails the build when a new one appears unguarded.
+- **The calendar carries no health information.** No appointment column, booking form or
+  confirmation screen holds a symptom, a reason for the visit or a comment — the health history is
+  taken privately on the iPad at the visit. `src/lib/scheduling/privacy.test.ts` fails the build if
+  a clinical column or a free-text box appears in the booking path.
 
 ## Clinic rules the software encodes
 
@@ -40,8 +44,11 @@ Deliberate product decisions, so nobody re-litigates them by accident:
 - Appointments are staggered 15 minutes apart (so up to five concurrent treatments with offset
   starts — not five patients per hour).
 
-These are recorded here because they drive the scheduling engine and the occupancy report; the
-scheduling module that consumes them does not exist yet.
+Rooms and visit types are seeded rows, not constants, so adding a sixth room or a new visit length
+is a seed edit. Working hours belong to a practitioner (`AvailabilityRule`), seeded as Mon–Fri
+9–5 and Sat 9–1. Times are stored and rendered in UTC throughout, so a deployment must run in the
+clinic's timezone until an explicit clinic-timezone setting exists — a gap to close before the
+first real booking.
 
 ## Stack
 
@@ -68,6 +75,15 @@ click-accept BAA.
 - **`ClinicalNote`** — the visit note. Tap-first selections live in `fieldsJson` and are composed
   into the text columns; signing sets `signedAt` and freezes the row. Corrections are a new row
   pointing back through `amendsId`, never an edit.
+- **`Service`** — a bookable visit type: `minutes`, `publiclyBookable`, and `firstVisit` (the only
+  kind a stranger may book on the website).
+- **`Room`** — a treatment room. The count of active rooms is the ceiling on overlapping visits.
+- **`AvailabilityRule`** / **`TimeOff`** — a practitioner's weekly working minutes, and closures.
+- **`Appointment`** — patient, practitioner, service, room, start, end, status
+  (`REQUESTED` → `BOOKED` → `CHECKED_IN` → `COMPLETED`, or `CANCELLED` / `NO_SHOW`) and `source`
+  (`STAFF` / `PORTAL` / `PUBLIC`). Scheduling logistics only, by design.
+- **`BookingAttempt`** — source addresses of public booking submissions, for throttling. Holds no
+  identity.
 - **`AuditLog`** — every chart view, intake submission, and note write, with user, IP, and user
   agent. Append-only; the app never prunes it.
 - **`LoginAttempt`** — every authentication attempt, used for throttling and as login-monitoring
@@ -84,6 +100,7 @@ Migrations are committed under `prisma/migrations` and production runs `prisma m
 | Intake paperwork | yes | yes | yes | own, read-only |
 | Clinical note content | yes | yes | **no** | **never** |
 | Start a kiosk intake | yes | yes | yes | no |
+| Calendar, book / reschedule / cancel / check-in | yes | yes | yes | own booking only |
 | Staff accounts (`/admin/staff`) | yes | no | no | no |
 | Audit log (`/admin/audit`) | yes | no | no | no |
 
@@ -130,6 +147,32 @@ another patient's submission id simply 404s. Patients see their submitted paperw
 dates and who they saw, and can correct their own contact and emergency details. Staff issue
 access from the "Patient portal" card on the chart; the one-time password is shown once on screen.
 
+### Scheduling and public booking
+
+The calendar has three doors and one set of rules. `src/lib/scheduling/slots.ts` is pure: it
+generates quarter-hour starts inside a practitioner's working minutes and rejects a slot unless
+that practitioner is free and some room is free for the whole visit. `bookAppointment` re-runs the
+same check inside the transaction that writes the row, under a per-day advisory lock, because a
+browser is always looking at a stale list — two people clicking the same 3pm is normal, and only
+one of them may get it.
+
+- **Staff** (`/schedule`, and Book on a chart) see the day room by room and drive the status:
+  confirm a website request, check in, complete, cancel, no-show. Cancelling frees the room;
+  the row stays, because attendance is what reporting has to explain.
+- **Patients** (`/portal/appointments`) book for themselves with two hours' notice, one future
+  visit at a time, and cancel outside 24 hours. The patient id comes from the session, so no id in
+  a request can point at anyone else.
+- **The public** (`/book`) is the front door for a first-time consultation, and it is the only
+  unauthenticated write in the product. It reads no chart — never looking anyone up by name, email
+  or date of birth — so it cannot be asked a question whose answer reveals whether somebody is a
+  patient here; a returning visitor simply produces a second chart for the front desk to merge. It
+  takes identity and contact details only, throttles by source address (5/hour, 20/day), offers
+  only first-visit services, and lands as a `REQUESTED` appointment that holds the room until the
+  front desk confirms it. The confirmation screen shows a six-character reference, not a row id.
+
+No confirmation email or SMS is sent yet: that needs a BAA'd provider, and even then would carry
+the time and the clinic's name only.
+
 ## Local development
 
 ```bash
@@ -158,7 +201,7 @@ app up and exercise it end to end.
 | `npm test` | Vitest, including the authorization audit |
 | `npm run db:migrate` | create a migration |
 | `npm run db:drift` | fail if committed migrations no longer match `schema.prisma` |
-| `npm run db:seed` | staff users, intake form v1, note templates |
+| `npm run db:seed` | staff users, intake form v1, note templates, rooms, services, working hours |
 | `npm run db:push` | sync schema without a migration (development only) |
 
 ## Before real patients
@@ -175,9 +218,12 @@ Launch gates, not nice-to-haves:
    paper packet.
 6. Access review, PHI-in-logs re-audit, and an independent penetration test.
 7. Load / soak / cold-start testing against Cloud Run + Cloud SQL connection limits.
+8. Set the clinic's timezone explicitly rather than relying on the deployment running in UTC-equal
+   local time, and decide who sends booking confirmations (a BAA'd email provider, or the phone).
 
 ## Build history
 
 Stacked branches, each reviewed as its own PR: intake + notes MVP (#1) → security hardening (#2) →
 patient portal (#3) → operational hardening: staff management, idle timeout, posted search,
-encrypted TOTP secrets (#4). Scheduling is next.
+encrypted TOTP secrets (#4) → the scope README (#5) → scheduling: staff calendar, portal booking,
+public website booking (#6). Payments and reporting are next.

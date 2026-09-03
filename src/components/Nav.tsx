@@ -18,6 +18,9 @@ export function Nav({ user }: { user: SessionUser }) {
           Minnekyda <span className="text-moss-600">Acuherb</span>
         </Link>
         <nav className="flex items-center gap-1 text-sm">
+          <Link href="/schedule" className="btn-ghost">
+            Schedule
+          </Link>
           <Link href="/patients" className="btn-ghost">
             Patients
           </Link>

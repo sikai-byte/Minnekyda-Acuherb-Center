@@ -15,6 +15,9 @@ export function PortalShell({ name, children }: { name: string; children: React.
             <Link href="/portal" className="btn-ghost">
               My records
             </Link>
+            <Link href="/portal/appointments" className="btn-ghost">
+              My appointments
+            </Link>
             <Link href="/portal/profile" className="btn-ghost">
               My details
             </Link>

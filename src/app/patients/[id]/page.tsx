@@ -21,6 +21,14 @@ export default async function PatientChartPage({ params }: { params: { id: strin
         include: { author: true, amends: true },
       },
       portalAccount: { select: { email: true, active: true, lastLoginAt: true } },
+      appointments: {
+        orderBy: { startsAt: 'desc' },
+        take: 10,
+        include: {
+          service: { select: { name: true } },
+          practitioner: { select: { name: true } },
+        },
+      },
     },
   });
   if (!patient) notFound();
@@ -91,6 +99,36 @@ export default async function PatientChartPage({ params }: { params: { id: strin
             account={patient.portalAccount}
             patientEmail={patient.email}
           />
+
+          <section className="card">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-clay-500">
+                Appointments
+              </h2>
+              <Link href={`/patients/${patient.id}/book`} className="btn-secondary">
+                Book
+              </Link>
+            </div>
+            {patient.appointments.length === 0 ? (
+              <p className="text-sm text-clay-600">Nothing booked.</p>
+            ) : (
+              <ul className="divide-y divide-clay-100">
+                {patient.appointments.map((appointment) => (
+                  <li key={appointment.id} className="flex items-center justify-between gap-3 py-2.5 text-sm">
+                    <div>
+                      <p className="font-medium">{formatDateTime(appointment.startsAt)}</p>
+                      <p className="text-xs text-clay-500">
+                        {appointment.service.name} · {appointment.practitioner.name}
+                      </p>
+                    </div>
+                    <span className="badge bg-clay-100 text-clay-700">
+                      {appointment.status.replace('_', ' ').toLowerCase()}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
 
           <section className="card">
             <h2 className="mb-4 text-sm font-semibold uppercase tracking-wide text-clay-500">Intake forms</h2>

@@ -37,6 +37,24 @@ model LoginAttempt {
   @@index([ip, createdAt])
 }
 
+enum AppointmentStatus {
+  /// Asked for through the public website and not yet confirmed by the front desk.
+  REQUESTED
+  BOOKED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+enum BookingSource {
+  STAFF
+  /// The patient's own portal login.
+  PORTAL
+  /// The public website, by someone who may not have a chart yet.
+  PUBLIC
+}
+
 enum IntakeStatus {
   IN_PROGRESS
   SUBMITTED
@@ -73,6 +91,10 @@ model User {
   notes          ClinicalNote[] @relation("NoteAuthor")
   startedIntakes IntakeSubmission[] @relation("IntakeStartedBy")
   auditLogs      AuditLog[]
+  availability   AvailabilityRule[] @relation("PractitionerAvailability")
+  timeOff        TimeOff[] @relation("PractitionerTimeOff")
+  appointments   Appointment[] @relation("PractitionerAppointments")
+  bookedAppointments Appointment[] @relation("AppointmentCreatedBy")
   patient        Patient?  @relation(fields: [patientId], references: [id], onDelete: Cascade)
 }
 
@@ -93,14 +115,118 @@ model Patient {
   emergencyName      String?
   emergencyPhone     String?
   archivedAt         DateTime?
+  /// Set when the chart was created by someone booking on the public website rather than by
+  /// staff, so the front desk knows the identity is unverified and may be a duplicate.
+  selfRegisteredAt   DateTime?
   createdAt          DateTime  @default(now())
   updatedAt          DateTime  @updatedAt
 
   intakes            IntakeSubmission[]
   notes              ClinicalNote[]
+  appointments       Appointment[]
   portalAccount      User?
 
   @@index([lastName, firstName])
+}
+
+/// A bookable visit type. `minutes` is the room time it occupies; the clinic's own rules are
+/// 60 minutes for a treatment and 75 for a first consultation plus treatment.
+model Service {
+  id               String   @id @default(cuid())
+  slug             String   @unique
+  name             String
+  description      String?
+  minutes          Int
+  /// Offered on the public website. First-visit services are the only ones a stranger may
+  /// book; everything else is portal or front desk.
+  publiclyBookable Boolean  @default(false)
+  firstVisit       Boolean  @default(false)
+  active           Boolean  @default(true)
+  createdAt        DateTime @default(now())
+
+  appointments     Appointment[]
+}
+
+model Room {
+  id           String   @id @default(cuid())
+  name         String   @unique
+  active       Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  appointments Appointment[]
+}
+
+/// The weekly template of when a practitioner sees patients. Times are minutes from midnight
+/// in the clinic's timezone, which keeps the arithmetic free of daylight-saving surprises.
+model AvailabilityRule {
+  id             String @id @default(cuid())
+  practitionerId  String
+  weekday        Int
+  startMinute    Int
+  endMinute      Int
+
+  practitioner   User   @relation("PractitionerAvailability", fields: [practitionerId], references: [id], onDelete: Cascade)
+
+  @@index([practitionerId, weekday])
+}
+
+/// A closure: vacation, a meeting, a public holiday. `label` is staff-facing scheduling
+/// language only — never a patient's reason for anything.
+model TimeOff {
+  id             String   @id @default(cuid())
+  /// Null closes the whole clinic.
+  practitionerId String?
+  startsAt       DateTime
+  endsAt         DateTime
+  label          String?
+  createdAt      DateTime @default(now())
+
+  practitioner   User?    @relation("PractitionerTimeOff", fields: [practitionerId], references: [id], onDelete: Cascade)
+
+  @@index([startsAt])
+}
+
+/// Scheduling logistics only. There is deliberately no complaint, reason, symptom or comment
+/// column here: the calendar is the least protected surface in the product — it is read by
+/// the front desk all day and partly authored by the public booking form — so no health
+/// information is allowed to enter it. Clinical content lives in `ClinicalNote`, which
+/// front desk staff cannot open, and `scheduling.test.ts` fails the build if a free-text
+/// column appears on this model.
+model Appointment {
+  id              String            @id @default(cuid())
+  patientId       String
+  practitionerId  String
+  serviceId       String
+  roomId          String?
+  startsAt        DateTime
+  endsAt          DateTime
+  status          AppointmentStatus @default(BOOKED)
+  source          BookingSource     @default(STAFF)
+  createdById     String?
+  checkedInAt     DateTime?
+  cancelledAt     DateTime?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  patient         Patient           @relation(fields: [patientId], references: [id], onDelete: Cascade)
+  practitioner    User              @relation("PractitionerAppointments", fields: [practitionerId], references: [id])
+  service         Service           @relation(fields: [serviceId], references: [id])
+  room            Room?             @relation(fields: [roomId], references: [id])
+  createdBy       User?             @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
+
+  @@index([startsAt])
+  @@index([practitionerId, startsAt])
+  @@index([patientId, startsAt])
+}
+
+/// One row per public booking submission, so the open form can be throttled per source
+/// address without reaching into the appointment table. Contact details stay on the chart.
+model BookingAttempt {
+  id        String   @id @default(cuid())
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([ip, createdAt])
 }
 
 /// A versioned intake questionnaire. Editing a live form creates a new version

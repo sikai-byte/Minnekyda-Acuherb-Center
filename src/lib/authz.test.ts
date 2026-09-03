@@ -18,10 +18,13 @@ const UNAUTHENTICATED_PAGES = new Set([
   'login/page.tsx',
   'login/mfa/page.tsx',
   'login/mfa/setup/page.tsx',
+  /// The public booking site. It reads no chart, and the checks below hold it to that.
+  'book/page.tsx',
 ]);
 
-/// Sign-in and sign-out are the guards; everything else in `lib/actions` needs one.
-const UNAUTHENTICATED_ACTIONS = new Set(['auth.ts']);
+/// Sign-in, sign-out and public booking are unauthenticated by design; everything else in
+/// `lib/actions` needs a guard.
+const UNAUTHENTICATED_ACTIONS = new Set(['auth.ts', 'publicBooking.ts']);
 
 function walk(dir: string): string[] {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -65,6 +68,7 @@ describe('deny-by-default authorization', () => {
   const portalFiles = [
     ...walk(path.join(APP, 'portal')),
     path.join(ACTIONS, 'portal.ts'),
+    path.join(ACTIONS, 'portalBooking.ts'),
   ].filter((file) => /\.tsx?$/.test(file));
 
   it.each(portalFiles)('%s is scoped to the signed-in patient', (file) => {
@@ -106,5 +110,14 @@ describe('deny-by-default authorization', () => {
     const list = source.match(/const PUBLIC_PATHS = \[([^\]]*)\]/)?.[1] ?? '';
     const paths = (list.match(/'[^']+'/g) ?? []).map((quoted) => quoted.slice(1, -1));
     expect(paths).toEqual(['/login', '/login/mfa', '/login/mfa/setup']);
+  });
+
+  /// Public booking widens the unauthenticated surface, so the list of pages it opens is
+  /// pinned here too: a new page cannot join it without this test being changed on purpose.
+  it('keeps the public booking allow-list to the booking page', () => {
+    const source = readFileSync(path.join(SRC, 'middleware.ts'), 'utf8');
+    const list = source.match(/const PUBLIC_BOOKING_PATHS = \[([^\]]*)\]/)?.[1] ?? '';
+    const paths = (list.match(/'[^']+'/g) ?? []).map((quoted) => quoted.slice(1, -1));
+    expect(paths).toEqual(['/book']);
   });
 });

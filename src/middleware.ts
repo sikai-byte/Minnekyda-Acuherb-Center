@@ -15,8 +15,13 @@ import {
 /// further. Kiosk tokens are additionally confined to their own intake (see lib/kiosk).
 const PUBLIC_PATHS = ['/login', '/login/mfa', '/login/mfa/setup'];
 
+/// The public booking site, open to someone who has never been here. It shows open times and
+/// takes contact details; it reads no chart and renders no patient data, so an anonymous
+/// visitor learns nothing about anyone but themselves.
+const PUBLIC_BOOKING_PATHS = ['/book'];
+
 function isPublic(pathname: string): boolean {
-  return PUBLIC_PATHS.includes(pathname);
+  return PUBLIC_PATHS.includes(pathname) || PUBLIC_BOOKING_PATHS.includes(pathname);
 }
 
 function securityHeaders(headers: Headers, nonce: string): void {
@@ -61,7 +66,11 @@ export async function middleware(request: NextRequest) {
 
   const kiosk = await getIronSession<KioskSession>(request, response, kioskSessionOptions());
   if (kiosk.submissionId) {
-    if (isPublic(pathname) || kioskAllowsPath(kiosk.submissionId, pathname)) return response;
+    /// A patient holding the iPad stays on their own intake: the booking site is public, but
+    /// it is still a way off the one page this device is meant to show.
+    if (PUBLIC_PATHS.includes(pathname) || kioskAllowsPath(kiosk.submissionId, pathname)) {
+      return response;
+    }
     return NextResponse.redirect(new URL(kioskPath(kiosk.submissionId), request.url), {
       headers: response.headers,
     });
