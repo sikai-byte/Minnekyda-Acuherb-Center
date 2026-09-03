@@ -2,43 +2,63 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import type { AppointmentStatus, ClinicEventType } from '@prisma/client';
-import { prisma } from '@/lib/db';
-import { requireUser } from '@/lib/auth';
+import { requireRole } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
-import { recordEvent } from '@/lib/telemetry';
-import { bookAppointment, openSlots } from '@/lib/scheduling/availability';
+import { getAvailableSlots } from '@/lib/scheduling/availability';
+import {
+  applyLifecycle,
+  bookAppointment,
+  changeRoom,
+  rescheduleAppointment as moveAppointment,
+  type Actor,
+  type LifecycleAction,
+} from '@/lib/scheduling/booking';
+import type { SessionUser } from '@/lib/session';
 
 /// The front desk's side of the calendar. Every one of these names a patient, so every one
 /// needs a staff session and an audit row; none of them accepts or stores a reason for the
 /// visit, because the calendar carries no health information.
+///
+/// Scheduling is front-desk work, so all three staff roles may do it. A PATIENT session never
+/// reaches here: `requireRole` sends it back to its own portal, which is what stops a patient
+/// naming somebody else's chart in a booking form.
+const SCHEDULING_ROLES = ['ADMIN', 'PRACTITIONER', 'FRONT_DESK'] as const;
 
 const bookingSchema = z.object({
   patientId: z.string().min(1),
   practitionerId: z.string().min(1),
-  serviceId: z.string().min(1),
-  /// The exact slot the browser was shown, as an ISO instant.
+  appointmentTypeId: z.string().min(1),
+  /// The exact slot the browser was shown, as an ISO instant. Duration is never accepted from
+  /// the client: it comes from the appointment type, server-side.
   startsAt: z.string().datetime(),
 });
 
-export type AppointmentActionState = { error?: string; booked?: string };
+export type AppointmentActionState = { error?: string; booked?: string; done?: boolean };
+
+function staffActor(user: SessionUser): Actor {
+  return { id: user.id, role: user.role, source: 'STAFF' };
+}
 
 export async function staffOpenSlots(
   practitionerId: string,
-  serviceId: string,
-  isoDate: string,
+  appointmentTypeId: string,
+  date: string,
 ): Promise<string[]> {
-  await requireUser();
-  const slots = await openSlots({ practitionerId, serviceId, isoDate });
+  await requireRole([...SCHEDULING_ROLES]);
+  const slots = await getAvailableSlots({
+    practitionerId: practitionerId || null,
+    appointmentTypeId,
+    date,
+  });
   return slots.map((slot) => slot.startsAt.toISOString());
 }
 
 export async function bookForPatient(formData: FormData): Promise<AppointmentActionState> {
-  const user = await requireUser();
+  const user = await requireRole([...SCHEDULING_ROLES]);
   const parsed = bookingSchema.safeParse({
     patientId: formData.get('patientId') ?? '',
     practitionerId: formData.get('practitionerId') ?? '',
-    serviceId: formData.get('serviceId') ?? '',
+    appointmentTypeId: formData.get('appointmentTypeId') ?? '',
     startsAt: formData.get('startsAt') ?? '',
   });
   if (!parsed.success) return { error: 'Choose a practitioner, a visit type and a time.' };
@@ -46,10 +66,9 @@ export async function bookForPatient(formData: FormData): Promise<AppointmentAct
   const result = await bookAppointment({
     patientId: parsed.data.patientId,
     practitionerId: parsed.data.practitionerId,
-    serviceId: parsed.data.serviceId,
+    appointmentTypeId: parsed.data.appointmentTypeId,
     startsAt: new Date(parsed.data.startsAt),
-    source: 'STAFF',
-    createdById: user.id,
+    actor: staffActor(user),
   });
   if (!result.ok) return { error: result.reason };
 
@@ -71,22 +90,13 @@ export async function rescheduleAppointment(
   appointmentId: string,
   startsAtIso: string,
 ): Promise<AppointmentActionState> {
-  const user = await requireUser();
-  const existing = await prisma.appointment.findUnique({
-    where: { id: appointmentId },
-    select: { patientId: true, practitionerId: true, serviceId: true, status: true },
-  });
-  if (!existing) return { error: 'That appointment no longer exists.' };
-  if (existing.status === 'COMPLETED') return { error: 'A completed visit cannot be moved.' };
+  const user = await requireRole([...SCHEDULING_ROLES]);
+  if (Number.isNaN(Date.parse(startsAtIso))) return { error: 'Pick a time.' };
 
-  const result = await bookAppointment({
-    patientId: existing.patientId,
-    practitionerId: existing.practitionerId,
-    serviceId: existing.serviceId,
+  const result = await moveAppointment({
+    appointmentId,
     startsAt: new Date(startsAtIso),
-    source: 'STAFF',
-    createdById: user.id,
-    replacingId: appointmentId,
+    actor: staffActor(user),
   });
   if (!result.ok) return { error: result.reason };
 
@@ -95,79 +105,64 @@ export async function rescheduleAppointment(
     action: 'reschedule_appointment',
     entity: 'Appointment',
     entityId: result.appointmentId,
-    patientId: existing.patientId,
-    detail: { from: appointmentId, startsAt: result.startsAt.toISOString() },
+    detail: { startsAt: result.startsAt.toISOString() },
   });
 
   revalidatePath('/schedule');
-  revalidatePath(`/patients/${existing.patientId}`);
   return { booked: result.appointmentId };
 }
 
-const STAFF_TRANSITIONS: Record<string, AppointmentStatus> = {
-  confirm: 'BOOKED',
-  'check-in': 'CHECKED_IN',
-  complete: 'COMPLETED',
-  cancel: 'CANCELLED',
-  'no-show': 'NO_SHOW',
-};
+export async function moveAppointmentRoom(
+  appointmentId: string,
+  roomId: string,
+): Promise<AppointmentActionState> {
+  const user = await requireRole([...SCHEDULING_ROLES]);
+  const result = await changeRoom(appointmentId, roomId, staffActor(user));
+  if (!result.ok) return { error: result.reason };
 
-const STATUS_EVENTS: Partial<Record<AppointmentStatus, ClinicEventType>> = {
-  CHECKED_IN: 'APPOINTMENT_CHECKED_IN',
-  COMPLETED: 'APPOINTMENT_COMPLETED',
-  CANCELLED: 'APPOINTMENT_CANCELLED',
-  NO_SHOW: 'APPOINTMENT_NO_SHOW',
-};
+  await recordAudit({
+    userId: user.id,
+    action: 'appointment_room',
+    entity: 'Appointment',
+    entityId: appointmentId,
+    detail: { roomId: result.roomId },
+  });
 
-/// One entry point for the day's status taps, so each one audits identically. Cancelling
-/// and marking a no-show release the room; the appointment row itself is kept either way,
-/// because attendance history is part of what the reporting has to explain.
+  revalidatePath('/schedule');
+  return { done: true };
+}
+
+const LIFECYCLE_ACTIONS: LifecycleAction[] = [
+  'confirm',
+  'check-in',
+  'complete',
+  'cancel',
+  'no-show',
+];
+
+/// One entry point for the day's status taps, so each one audits identically. Cancelling and
+/// marking a no-show release the room immediately; the appointment row itself is kept either
+/// way, because attendance history is part of what the reporting has to explain.
 export async function setAppointmentStatus(
   appointmentId: string,
-  transition: keyof typeof STAFF_TRANSITIONS,
+  action: LifecycleAction,
 ): Promise<AppointmentActionState> {
-  const user = await requireUser();
-  const status = STAFF_TRANSITIONS[transition];
-  if (!status) return { error: 'Unknown change.' };
+  const user = await requireRole([...SCHEDULING_ROLES]);
+  if (!LIFECYCLE_ACTIONS.includes(action)) return { error: 'Unknown change.' };
 
-  const existing = await prisma.appointment.findUnique({
-    where: { id: appointmentId },
-    select: { patientId: true, status: true, serviceId: true, roomId: true, source: true },
-  });
-  if (!existing) return { error: 'That appointment no longer exists.' };
-
-  await prisma.appointment.update({
-    where: { id: appointmentId },
-    data: {
-      status,
-      checkedInAt: status === 'CHECKED_IN' ? new Date() : undefined,
-      cancelledAt: status === 'CANCELLED' ? new Date() : undefined,
-    },
-  });
+  const result = await applyLifecycle(appointmentId, action, staffActor(user));
+  if (!result.ok) return { error: result.reason };
 
   await recordAudit({
     userId: user.id,
     action: 'appointment_status',
     entity: 'Appointment',
     entityId: appointmentId,
-    patientId: existing.patientId,
-    detail: { from: existing.status, to: status },
+    patientId: result.patientId,
+    detail: { to: result.status },
   });
 
-  const event = STATUS_EVENTS[status];
-  if (event) {
-    await recordEvent({
-      type: event,
-      patientId: existing.patientId,
-      userId: user.id,
-      appointmentId,
-      serviceId: existing.serviceId,
-      roomId: existing.roomId,
-      source: existing.source,
-    });
-  }
-
   revalidatePath('/schedule');
-  revalidatePath(`/patients/${existing.patientId}`);
-  return {};
+  revalidatePath(`/patients/${result.patientId}`);
+  return { done: true };
 }

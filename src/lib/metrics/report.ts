@@ -1,5 +1,11 @@
 import { prisma } from '@/lib/db';
-import { dayStart, toIsoDate } from '@/lib/scheduling/slots';
+import {
+  addDays,
+  clinicDayEnd,
+  clinicDayStart,
+  clinicIsoDate,
+  clinicWeekday,
+} from '@/lib/scheduling/time';
 import {
   completionToSignedNote,
   frontDeskLoad,
@@ -26,23 +32,23 @@ export type ClinicReport = {
 };
 
 export function lastDays(days: number, today = new Date()): ReportWindow {
-  const toIso = toIsoDate(today);
-  const from = new Date(dayStart(toIso).getTime() - (days - 1) * 24 * 60 * 60 * 1000);
-  return { fromIso: toIsoDate(from), toIso };
+  const toIso = clinicIsoDate(today);
+  return { fromIso: addDays(toIso, -(days - 1)), toIso };
 }
 
 /// The practitioners' working minutes across the window, which is the denominator for both
-/// utilisation figures. Read from the same `AvailabilityRule` rows the booking engine uses, so
-/// a report can never claim capacity the calendar would not have offered.
-async function openMinutesBetween(from: Date, to: Date): Promise<number> {
-  const rules = await prisma.availabilityRule.findMany({
+/// utilisation figures. Read from the same `PractitionerAvailability` rows the booking engine
+/// uses, so a report can never claim capacity the calendar would not have offered. Days are
+/// walked in clinic-local dates, so a DST week is 7 days rather than 7 × 24 hours.
+async function openMinutesBetween(fromIso: string, toIso: string): Promise<number> {
+  const rules = await prisma.practitionerAvailability.findMany({
     where: { practitioner: { active: true } },
     select: { weekday: true, startMinute: true, endMinute: true },
   });
 
   let minutes = 0;
-  for (let day = new Date(from); day < to; day = new Date(day.getTime() + 24 * 60 * 60 * 1000)) {
-    const weekday = day.getUTCDay();
+  for (let day = fromIso; day <= toIso; day = addDays(day, 1)) {
+    const weekday = clinicWeekday(day);
     for (const rule of rules) {
       if (rule.weekday === weekday) minutes += rule.endMinute - rule.startMinute;
     }
@@ -51,8 +57,8 @@ async function openMinutesBetween(from: Date, to: Date): Promise<number> {
 }
 
 export async function clinicReport(window: ReportWindow): Promise<ClinicReport> {
-  const from = dayStart(window.fromIso);
-  const to = new Date(dayStart(window.toIso).getTime() + 24 * 60 * 60 * 1000);
+  const from = clinicDayStart(window.fromIso);
+  const to = clinicDayEnd(window.toIso);
 
   const [events, appointments, rooms, openMinutes] = await Promise.all([
     prisma.clinicEvent.findMany({
@@ -71,8 +77,8 @@ export async function clinicReport(window: ReportWindow): Promise<ClinicReport> 
       where: { startsAt: { gte: from, lt: to } },
       select: { startsAt: true, endsAt: true, status: true, source: true },
     }) as Promise<AppointmentRow[]>,
-    prisma.room.count({ where: { active: true } }),
-    openMinutesBetween(from, to),
+    prisma.treatmentRoom.count({ where: { active: true } }),
+    openMinutesBetween(window.fromIso, window.toIso),
   ]);
 
   return {

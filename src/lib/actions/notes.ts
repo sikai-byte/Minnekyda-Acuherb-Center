@@ -61,6 +61,7 @@ function readNoteForm(formData: FormData): { ok: true; data: ParsedNote } | { ok
 
 export async function createNote(
   patientId: string,
+  appointmentId: string | null,
   _prev: NoteFormState,
   formData: FormData,
 ): Promise<NoteFormState> {
@@ -71,6 +72,15 @@ export async function createNote(
   const sign = formData.get('intent') === 'sign';
   const { visitDate, templateId, structured, text } = parsed.data;
 
+  /// The appointment is only an anchor if it is this patient's: an id from somewhere else must
+  /// not pull a second chart into the note.
+  const appointment = appointmentId
+    ? await prisma.appointment.findFirst({
+        where: { id: appointmentId, patientId },
+        select: { id: true },
+      })
+    : null;
+
   const note = await prisma.clinicalNote.create({
     data: {
       ...text,
@@ -78,6 +88,7 @@ export async function createNote(
       patientId,
       authorId: user.id,
       templateId: templateId || null,
+      appointmentId: appointment?.id ?? null,
       visitDate: new Date(visitDate),
       status: sign ? 'SIGNED' : 'DRAFT',
       signedAt: sign ? new Date() : null,

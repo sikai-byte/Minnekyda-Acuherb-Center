@@ -8,15 +8,31 @@ import { recordEvent } from '@/lib/telemetry';
 import { createNote } from '@/lib/actions/notes';
 import { templatePresets } from '@/lib/notes/structure';
 import { formatDateInput, patientName } from '@/lib/format';
+import { clinicDate, clinicTime } from '@/lib/scheduling/time';
 
 export const dynamic = 'force-dynamic';
 
-export default async function NewNotePage({ params }: { params: { id: string } }) {
+/// Reached in one tap from today's schedule. The appointment id carries the patient, the
+/// practitioner and the visit date across, so there is no second patient search — and it is
+/// re-checked against this chart before it is stored on the note.
+export default async function NewNotePage({
+  params,
+  searchParams,
+}: {
+  params: { id: string };
+  searchParams: { appointmentId?: string };
+}) {
   const user = await requireRole(CLINICAL_ROLES);
 
-  const [patient, templates] = await Promise.all([
+  const [patient, templates, appointment] = await Promise.all([
     prisma.patient.findUnique({ where: { id: params.id } }),
     prisma.noteTemplate.findMany({ where: { active: true }, orderBy: { name: 'asc' } }),
+    searchParams.appointmentId
+      ? prisma.appointment.findFirst({
+          where: { id: searchParams.appointmentId, patientId: params.id },
+          select: { id: true, startsAt: true, appointmentType: { select: { name: true } } },
+        })
+      : null,
   ]);
   if (!patient) notFound();
 
@@ -42,11 +58,17 @@ export default async function NewNotePage({ params }: { params: { id: string } }
           ← {patientName(patient)}
         </Link>
         <h1 className="mt-2 text-2xl font-semibold tracking-tight">New visit note</h1>
+        {appointment ? (
+          <p className="mt-1 text-sm text-clay-600">
+            {appointment.appointmentType.name} · {clinicDate(appointment.startsAt)} at{' '}
+            {clinicTime(appointment.startsAt)}
+          </p>
+        ) : null}
       </div>
       <NoteEditor
-        action={createNote.bind(null, patient.id)}
+        action={createNote.bind(null, patient.id, appointment?.id ?? null)}
         templates={templateOptions}
-        visitDate={formatDateInput(new Date())}
+        visitDate={formatDateInput(appointment?.startsAt ?? new Date())}
         templateId=""
         structured={{}}
       />

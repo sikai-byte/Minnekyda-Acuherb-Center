@@ -38,9 +38,25 @@ model LoginAttempt {
 }
 
 enum AppointmentStatus {
-  /// Asked for through the public website and not yet confirmed by the front desk.
+  /// Asked for through the public website by a stranger and not yet confirmed by the front
+  /// desk. It holds capacity like any other appointment; what it does not hold is a verified
+  /// identity.
   REQUESTED
-  BOOKED
+  SCHEDULED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+  NO_SHOW
+}
+
+/// What happened to an appointment. Every one of these is written once and never updated, so
+/// an admin can reconstruct who moved a visit and when even after it was moved again.
+enum AppointmentEventType {
+  CREATED
+  CONFIRMED
+  RESCHEDULED
+  ROOM_CHANGED
+  PRACTITIONER_CHANGED
   CHECKED_IN
   COMPLETED
   CANCELLED
@@ -91,10 +107,11 @@ model User {
   notes          ClinicalNote[] @relation("NoteAuthor")
   startedIntakes IntakeSubmission[] @relation("IntakeStartedBy")
   auditLogs      AuditLog[]
-  availability   AvailabilityRule[] @relation("PractitionerAvailability")
-  timeOff        TimeOff[] @relation("PractitionerTimeOff")
+  availability   PractitionerAvailability[] @relation("PractitionerAvailability")
+  timeOff        ClinicClosure[] @relation("PractitionerTimeOff")
   appointments   Appointment[] @relation("PractitionerAppointments")
   bookedAppointments Appointment[] @relation("AppointmentCreatedBy")
+  appointmentEvents  AppointmentEvent[] @relation("AppointmentEventActor")
   patient        Patient?  @relation(fields: [patientId], references: [id], onDelete: Cascade)
 }
 
@@ -129,38 +146,72 @@ model Patient {
   @@index([lastName, firstName])
 }
 
-/// A bookable visit type. `minutes` is the room time it occupies; the clinic's own rules are
-/// 60 minutes for a treatment and 75 for a first consultation plus treatment.
-model Service {
+/// What a visit is and how long it takes. The clinic's own rules are 60 minutes for a treatment
+/// and 75 for a first consultation plus treatment. Duration lives here and nowhere else: no
+/// caller may pass a length, so a browser cannot ask for a 15-minute new-patient consultation.
+model AppointmentType {
   id               String   @id @default(cuid())
   slug             String   @unique
   name             String
   description      String?
   minutes          Int
-  /// Offered on the public website. First-visit services are the only ones a stranger may
-  /// book; everything else is portal or front desk.
+  /// Offered on the public website. First-visit types are the only ones a stranger may book;
+  /// everything else is portal or front desk.
   publiclyBookable Boolean  @default(false)
   firstVisit       Boolean  @default(false)
   active           Boolean  @default(true)
   createdAt        DateTime @default(now())
 
   appointments     Appointment[]
+
+  @@index([active])
 }
 
-model Room {
+/// A physical treatment room. Room occupancy and practitioner capacity are separate limits:
+/// five rooms is how many patients can be on tables at once, which is not the same question as
+/// how many a practitioner can be responsible for.
+model TreatmentRoom {
   id           String   @id @default(cuid())
   name         String   @unique
+  /// Rooms are ordered, not sorted by name, so "Room 10" does not come before "Room 2" and the
+  /// front desk always sees the day in the same column order.
+  position     Int      @default(0)
   active       Boolean  @default(true)
   createdAt    DateTime @default(now())
 
   appointments Appointment[]
+
+  @@index([active, position])
+}
+
+/// The clinic's capacity rules, as data rather than constants, because the real staggered model
+/// is not settled yet. One row, `id = "default"`.
+///
+/// `maxConcurrentPerPractitioner` starts at 1 — the conservative reading, one patient at a time
+/// — deliberately: the clinic staggers arrivals across five rooms, and a practitioner plausibly
+/// oversees several treatments at once, but which minutes of a 60-minute treatment need the
+/// practitioner in the room is a clinical question nobody has answered yet. Raising this number
+/// is a settings change, not a rewrite. `practitionerActiveMinutes`, when set, is the answer to
+/// that question: only the first N minutes of a visit are treated as needing the practitioner,
+/// which is what actually lets 15-minute staggering work.
+model SchedulingPolicy {
+  id                           String   @id @default("default")
+  maxConcurrentPerPractitioner Int      @default(1)
+  practitionerActiveMinutes    Int?
+  slotStepMinutes              Int      @default(15)
+  /// How much warning a patient booking themselves has to give, and how much notice they must
+  /// give to cancel without phoning.
+  selfBookingNoticeMinutes     Int      @default(120)
+  selfCancelNoticeHours        Int      @default(24)
+  bookingHorizonDays           Int      @default(60)
+  updatedAt                    DateTime @updatedAt
 }
 
 /// The weekly template of when a practitioner sees patients. Times are minutes from midnight
 /// in the clinic's timezone, which keeps the arithmetic free of daylight-saving surprises.
-model AvailabilityRule {
+model PractitionerAvailability {
   id             String @id @default(cuid())
-  practitionerId  String
+  practitionerId String
   weekday        Int
   startMinute    Int
   endMinute      Int
@@ -172,7 +223,7 @@ model AvailabilityRule {
 
 /// A closure: vacation, a meeting, a public holiday. `label` is staff-facing scheduling
 /// language only — never a patient's reason for anything.
-model TimeOff {
+model ClinicClosure {
   id             String   @id @default(cuid())
   /// Null closes the whole clinic.
   practitionerId String?
@@ -183,7 +234,8 @@ model TimeOff {
 
   practitioner   User?    @relation("PractitionerTimeOff", fields: [practitionerId], references: [id], onDelete: Cascade)
 
-  @@index([startsAt])
+  @@index([startsAt, endsAt])
+  @@index([practitionerId, startsAt])
 }
 
 /// Scheduling logistics only. There is deliberately no complaint, reason, symptom or comment
@@ -193,30 +245,70 @@ model TimeOff {
 /// front desk staff cannot open, and `scheduling.test.ts` fails the build if a free-text
 /// column appears on this model.
 model Appointment {
-  id              String            @id @default(cuid())
-  patientId       String
-  practitionerId  String
-  serviceId       String
-  roomId          String?
-  startsAt        DateTime
-  endsAt          DateTime
-  status          AppointmentStatus @default(BOOKED)
-  source          BookingSource     @default(STAFF)
-  createdById     String?
-  checkedInAt     DateTime?
-  cancelledAt     DateTime?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id                String            @id @default(cuid())
+  patientId         String
+  practitionerId    String
+  appointmentTypeId String
+  roomId            String?
+  startsAt          DateTime
+  endsAt            DateTime
+  status            AppointmentStatus @default(SCHEDULED)
+  source            BookingSource     @default(STAFF)
+  createdById       String?
+  checkedInAt       DateTime?
+  completedAt       DateTime?
+  cancelledAt       DateTime?
+  noShowAt          DateTime?
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
 
   patient         Patient           @relation(fields: [patientId], references: [id], onDelete: Cascade)
   practitioner    User              @relation("PractitionerAppointments", fields: [practitionerId], references: [id])
-  service         Service           @relation(fields: [serviceId], references: [id])
-  room            Room?             @relation(fields: [roomId], references: [id])
+  appointmentType AppointmentType   @relation(fields: [appointmentTypeId], references: [id])
+  room            TreatmentRoom?    @relation(fields: [roomId], references: [id])
   createdBy       User?             @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
+  events          AppointmentEvent[]
+  notes           ClinicalNote[]
 
+  /// The day views and the availability query are all date-range reads filtered by room,
+  /// practitioner or status, and they are the queries that have to stay fast as the table grows
+  /// past ten thousand visits.
   @@index([startsAt])
   @@index([practitionerId, startsAt])
   @@index([patientId, startsAt])
+  @@index([roomId, startsAt])
+  @@index([status, startsAt])
+}
+
+/// The appointment's history, append-only. Nothing here is ever updated or deleted, including
+/// for a cancelled visit: what the front desk did and when is the record that answers a dispute
+/// about a missed appointment or a late cancellation fee.
+///
+/// Changes are recorded as typed columns rather than a free-text description, so the history is
+/// queryable and cannot become a place someone writes a sentence about a patient.
+model AppointmentEvent {
+  id                 String               @id @default(cuid())
+  appointmentId      String
+  type               AppointmentEventType
+  /// Null for the public website, where nobody is signed in.
+  actorId            String?
+  actorRole          Role?
+  source             BookingSource?
+  fromStatus         AppointmentStatus?
+  toStatus           AppointmentStatus?
+  fromStartsAt       DateTime?
+  toStartsAt         DateTime?
+  fromRoomId         String?
+  toRoomId           String?
+  fromPractitionerId String?
+  toPractitionerId   String?
+  createdAt          DateTime             @default(now())
+
+  appointment        Appointment          @relation(fields: [appointmentId], references: [id], onDelete: Cascade)
+  actor              User?                @relation("AppointmentEventActor", fields: [actorId], references: [id])
+
+  @@index([appointmentId, createdAt])
+  @@index([createdAt])
 }
 
 /// One row per public booking submission, so the open form can be throttled per source
@@ -266,7 +358,7 @@ model ClinicEvent {
   appointmentId  String?
   submissionId   String?
   noteId         String?
-  serviceId      String?
+  appointmentTypeId String?
   roomId         String?
   /// Which door a booking came through, which is what turns into front-desk minutes saved.
   source         BookingSource?
@@ -334,6 +426,11 @@ model ClinicalNote {
   patientId      String
   authorId       String
   templateId     String?
+  /// The visit this note documents, when it was started from the schedule. Optional because a
+  /// note may be written for a walk-in or a phone consultation that never had an appointment,
+  /// and because notes predating scheduling have none. Not unique: an amendment is a second
+  /// note about the same visit.
+  appointmentId  String?
   visitDate      DateTime
   status         NoteStatus   @default(DRAFT)
   chiefComplaint String?
@@ -355,8 +452,10 @@ model ClinicalNote {
   template       NoteTemplate? @relation(fields: [templateId], references: [id])
   amends         ClinicalNote? @relation("Amendment", fields: [amendsId], references: [id])
   amendedBy      ClinicalNote? @relation("Amendment")
+  appointment    Appointment?  @relation(fields: [appointmentId], references: [id])
 
   @@index([patientId, visitDate])
+  @@index([appointmentId])
 }
 
 /// Every read and write of patient data is recorded. Required for HIPAA audit controls.

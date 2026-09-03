@@ -2,7 +2,12 @@
 
 import { useRouter } from 'next/navigation';
 import { useState, useTransition } from 'react';
-import { SlotPicker, type PickerPractitioner, type PickerService } from '@/components/schedule/SlotPicker';
+import {
+  SlotPicker,
+  type PickerAppointmentType,
+  type PickerPractitioner,
+} from '@/components/schedule/SlotPicker';
+import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
 import { portalBook, portalCancel, portalOpenSlots } from '@/lib/actions/portalBooking';
 
 const WHEN = new Intl.DateTimeFormat('en-US', {
@@ -11,32 +16,33 @@ const WHEN = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   hour: 'numeric',
   minute: '2-digit',
-  timeZone: 'UTC',
+  timeZone: CLINIC_TIME_ZONE,
 });
 
 export type PortalAppointment = {
   id: string;
   startsAt: Date;
   status: string;
-  service: { name: string };
+  appointmentType: { name: string };
   practitioner: { name: string; credentials?: string | null };
 };
 
 export function PortalBooking({
-  services,
+  appointmentTypes,
   practitioners,
   horizonDays,
 }: {
-  services: PickerService[];
+  appointmentTypes: PickerAppointmentType[];
   practitioners: PickerPractitioner[];
   horizonDays: number;
 }) {
   const router = useRouter();
   return (
     <SlotPicker
-      services={services}
+      appointmentTypes={appointmentTypes}
       practitioners={practitioners}
       loadSlots={portalOpenSlots}
+      allowAnyPractitioner
       submit={portalBook}
       submitLabel="Book this time"
       horizonDays={horizonDays}
@@ -57,7 +63,7 @@ export function UpcomingAppointments({ appointments }: { appointments: PortalApp
           <div>
             <p className="font-medium">{WHEN.format(new Date(appointment.startsAt))}</p>
             <p className="text-sm text-clay-600">
-              {appointment.service.name} · {appointment.practitioner.name}
+              {appointment.appointmentType.name} · {appointment.practitioner.name}
               {appointment.practitioner.credentials ? `, ${appointment.practitioner.credentials}` : ''}
             </p>
             {appointment.status === 'REQUESTED' ? (
@@ -92,7 +98,7 @@ export function PastAppointments({ appointments }: { appointments: PortalAppoint
         <li key={appointment.id} className="flex items-center justify-between gap-3 py-2.5">
           <span>{WHEN.format(new Date(appointment.startsAt))}</span>
           <span className="text-clay-600">
-            {appointment.service.name} · {appointment.practitioner.name}
+            {appointment.appointmentType.name} · {appointment.practitioner.name}
           </span>
           <span className="badge bg-clay-100 text-clay-700">
             {appointment.status.replace('_', ' ').toLowerCase()}

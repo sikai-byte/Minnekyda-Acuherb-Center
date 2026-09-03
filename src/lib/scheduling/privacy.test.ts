@@ -9,9 +9,16 @@ import { describe, expect, it } from 'vitest';
 const SRC = path.join(__dirname, '..', '..');
 const SCHEMA = path.join(SRC, '..', 'prisma', 'schema.prisma');
 
-function appointmentModel(): string {
+/// The Appointment model's own columns, with relation lines removed. A relation to
+/// `ClinicalNote` is the intended link between a visit and its encounter; what must never
+/// appear is a column on the appointment itself holding clinical detail.
+function appointmentColumns(): string {
   const schema = readFileSync(SCHEMA, 'utf8');
-  return schema.match(/model Appointment \{[^}]*\}/)?.[0] ?? '';
+  const model = schema.match(/model Appointment \{[^}]*\}/)?.[0] ?? '';
+  return model
+    .split('\n')
+    .filter((line) => !line.includes('@relation') && !line.includes('[]'))
+    .join('\n');
 }
 
 /// Words that would mean the calendar had started collecting clinical detail.
@@ -29,7 +36,7 @@ const CLINICAL_WORDS = [
 
 describe('the calendar holds no health information', () => {
   it('has an Appointment model with scheduling columns only', () => {
-    const model = appointmentModel();
+    const model = appointmentColumns();
     expect(model).toMatch(/startsAt\s+DateTime/);
     for (const word of CLINICAL_WORDS) {
       expect(model.toLowerCase(), word).not.toContain(word.toLowerCase());
@@ -69,7 +76,7 @@ describe('the calendar holds no health information', () => {
       'email',
       'decoy',
       'patientId',
-      'serviceId',
+      'appointmentTypeId',
       'practitionerId',
       'startsAt',
     ]);

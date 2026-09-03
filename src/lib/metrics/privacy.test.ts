@@ -18,7 +18,7 @@ const ALLOWED_FIELDS = [
   'appointmentId',
   'submissionId',
   'noteId',
-  'serviceId',
+  'appointmentTypeId',
   'roomId',
   'source',
   'minutes',

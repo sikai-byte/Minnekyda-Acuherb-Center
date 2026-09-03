@@ -1,17 +1,17 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { SlotPicker, type PickerPractitioner, type PickerService } from './SlotPicker';
+import { SlotPicker, type PickerAppointmentType, type PickerPractitioner } from './SlotPicker';
 import { bookForPatient, staffOpenSlots } from '@/lib/actions/appointments';
 
 export function StaffBooking({
   patientId,
-  services,
+  appointmentTypes,
   practitioners,
   horizonDays,
 }: {
   patientId: string;
-  services: PickerService[];
+  appointmentTypes: PickerAppointmentType[];
   practitioners: PickerPractitioner[];
   horizonDays: number;
 }) {
@@ -19,7 +19,7 @@ export function StaffBooking({
 
   return (
     <SlotPicker
-      services={services}
+      appointmentTypes={appointmentTypes}
       practitioners={practitioners}
       loadSlots={staffOpenSlots}
       submit={bookForPatient}

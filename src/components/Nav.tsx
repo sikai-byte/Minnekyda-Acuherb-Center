@@ -21,6 +21,9 @@ export function Nav({ user }: { user: SessionUser }) {
           <Link href="/schedule" className="btn-ghost">
             Schedule
           </Link>
+          <Link href="/schedule/capacity" className="btn-ghost">
+            Capacity
+          </Link>
           <Link href="/patients" className="btn-ghost">
             Patients
           </Link>

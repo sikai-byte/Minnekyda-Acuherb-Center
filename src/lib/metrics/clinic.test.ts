@@ -158,7 +158,7 @@ describe('utilisation', () => {
       [
         appointment({ status: 'CANCELLED' }),
         appointment({ status: 'NO_SHOW' }),
-        appointment({ status: 'BOOKED' }),
+        appointment({ status: 'SCHEDULED' }),
       ],
       8 * 60,
       1,

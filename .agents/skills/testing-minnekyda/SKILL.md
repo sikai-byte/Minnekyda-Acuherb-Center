@@ -11,9 +11,13 @@ docker compose up -d          # Postgres on localhost:55433 (container: minnekyd
 # If compose errors with 'container name "/minnekyda-db" is already in use':
 docker start minnekyda-db
 npm install                   # if node_modules missing
-npm run db:push && npm run db:seed   # seeds are idempotent upserts
+npx prisma migrate deploy && npm run db:seed   # baseline migration prisma/migrations/0_init
 npm run dev                   # http://localhost:3000
 ```
+Use `npx prisma migrate deploy`, **not** `npm run db:push`, on branches that ship
+`prisma/migrations/0_init` — `db:push` can leave the schema out of step with the migration
+history. Seeds are idempotent upserts.
+
 `.env` needs `SESSION_SECRET` (blueprint's `initialize` generates it) and `DATABASE_URL`
 pointing at port 55433.
 
@@ -39,6 +43,89 @@ No patients are seeded; create them via `/patients/new` with synthetic data only
 - `/intake/[id]/view` read-only view; submitted intakes redirect `/intake/[id]` → the view
 - `/patients/[id]/notes/new` → `/notes/[id]`
 - `/admin/audit` (ADMIN only; other roles redirect to `/`)
+
+## Security / access-control testing (kiosk, MFA, throttling)
+
+**Pre-enrol one account from a script to save recorded-run time.** Every seeded user starts with
+`mustChangePassword=true` and no MFA, so each one costs a password → TOTP enrolment → forced
+password change cycle. For roles you only need to *view* something with (e.g. admin for
+`/admin/audit`), set `mfaSecret`, `mfaEnabledAt=now()` and `mustChangePassword=false` directly in
+the DB and keep the base32 secret; spend the recording on the role whose real flow you care about.
+
+**A stale browser session hides direct DB changes.** `requireUser()` reads the session snapshot,
+so flipping `mustChangePassword` in Postgres will not take effect until you sign out. Always sign
+out and confirm an unauthenticated `/patients` redirects to `/login` before starting a clean run.
+
+**Kiosk containment.** `startIntake` destroys the staff session on that device and sets a
+`minnekyda_kiosk` cookie scoped to one submission for 45 min. `kioskAllowsPath` permits **only**
+the exact `/intake/<own id>` — everything else (`/`, `/patients`, another chart, `/admin/audit`,
+`/notes/<id>`, `/kiosk`, a foreign `/intake/<id>`, and even its own `/intake/<id>/view`) redirects
+back to the kiosk route. Good visual proof that staff are really signed out: the header nav
+(`Patients` / `Audit log` / `Sign out`) disappears entirely on the kiosk page. After `exitKiosk`
+("Done"), re-entering the intake URL *and* pressing browser Back must both land on `/login`.
+
+**Driving server actions directly (to bypass the UI).** Action IDs live in the
+`__next_internal_action_entry_do_not_use__` map inside the compiled client chunks; grep the
+`.next` build output for the export name. Then `fetch` from the kiosk page's own JS context with
+the `Next-Action: <id>` header and a JSON body array of the action's arguments.
+- Always run a **positive control** with the same harness (e.g. `saveIntake` on the kiosk's own
+  submission should return `{"ok":true}` and persist), otherwise a "refused" result may just be a
+  broken request rather than real authorization.
+- Async results get lost in the console bridge; stash them on `window.__res` and read that global
+  in a second call.
+- A malformed request can surface `TypeError: __webpack_modules__[moduleId] is not a function`
+  (HTTP 500). That is an inconclusive harness error, **not** proof of an authorization check —
+  fall back to asserting on database state (e.g. `select count(*) from "ClinicalNote"`).
+
+**Throttling** is 5 failures per email / 20 per IP over 15 min (`src/lib/loginGuard.ts`). The 6th
+attempt swaps the generic `Email or password is incorrect` for the lockout message, and a correct
+password while locked still fails. Verify with
+`select reason, count(*) from "LoginAttempt" where email='…' group by reason;` (expect
+`bad_password=5`, `locked_out>=2`). **Run throttling last** — it locks the account for 15 minutes
+and will block any later test that needs to sign in as that user.
+
+**Audit attribution.** After a kiosk submit there is no session, so `submit_intake` is attributed
+via `submission.startedById` (shows the staff member who started it) while `exit_kiosk` correctly
+shows `—`. Check both in `/admin/audit`.
+
+## Patient portal / patient-boundary testing (PATIENT role)
+
+**Issuing a login.** Staff open the patient chart → "Patient portal" card. The chart email is the
+username; the card's create button is `disabled` when the chart has no email, and a staff address
+is refused with `That email address already has a login here. Use a different address.` The
+one-time password (`Word-word-NN`) is shown **once** — copy it before reloading. Revoke sets
+`User.active=false`; re-grant issues a *different* password, re-sets `mustChangePassword` and
+clears MFA material, so the previously chosen patient password stops working.
+
+**Patient sign-in is password-only by design** — it must go straight from `/login` to
+`/account/password` (no `/login/mfa*`), then land on `/portal` (not `/`).
+
+**Boundary surface.** `patientAllowsPath` allows only `/portal…` and `/account/password`, so every
+staff route (`/`, `/patients`, another chart, `/notes/<id>` *including the patient's own note*,
+`/admin/audit`, `/kiosk`, `/intake/<id>`, `/intake/<id>/view`) **redirects** to `/portal`, while
+`/portal/intake/<someone else's id>` is a **404** (`notFound()` from a session-scoped `findFirst`).
+Redirect-vs-404 is the expected difference; record which you get.
+
+**Proving no clinical-note text leaks (the clinic owner's hard requirement).** Seed notes with
+unique marker strings in every text column, confirm staff pages render them (positive control),
+then from the portal page's own JS context `fetch` `/portal`, `/portal/profile` and the patient's
+own `/portal/intake/<id>` and grep each body plus `self.__next_f` and
+`document.documentElement.outerHTML` for the markers and for field names like `chiefComplaint` /
+`tcmDiagnosis`. Always include a control substring that *is* expected (e.g. the visit date and
+`Dr. …`) so a zero-hit result cannot be an empty payload.
+
+**Server-action abuse from a patient session.** Action IDs → names are easiest to read from
+`.next/server`: `grep -rho '"[0-9a-f]\{40\}":"[a-zA-Z]*"' .next/server | sort -u`. Notes:
+- `useFormState` actions (`updateMyContactDetails`, `createNote`, `updatePatient`) take
+  `(prevState, formData)` (plus bound args), so a raw multipart `fetch` usually dies with
+  `Connection closed.` A JSON body `[null, {}]` *does* reach the action body — you will see
+  `formData.get is not a function`, which is a useful proof that dispatch works.
+- POSTing a staff action id from a patient session is refused by **middleware** (302 → the request
+  ends at `/portal` with 200 and the portal HTML), so the action-level `requireRole` check is not
+  itself exercised that way — say so, and back it with DB state.
+- The cleanest hostile test for "id from form data" is to inject extra hidden inputs
+  (`patientId`, `id`) into the real portal form via JS and `form.requestSubmit()`; the edit must
+  land on the signed-in patient only.
 
 ## Gotchas found while testing
 - **`useFormState` + same-route `redirect()` returns `undefined` state.** Server actions here
@@ -117,6 +204,47 @@ text columns from that structure on every save (`composeNoteText`).
   test the merge, set a value that differs from the preset first and confirm it survives.
 - "Note preview" (collapsible, near the bottom) shows exactly what will be stored — the
   cheapest way to diff editor state against the signed read-only view.
+
+## Operational hardening testing (admin staff management, idle timeout, posted search, encrypted TOTP)
+- `/admin/staff` is ADMIN-only and the `Staff` nav link only renders for ADMIN. Front desk and
+  practitioner typing the URL are bounced to `/`. PATIENT portal users never appear in the list
+  (`role: { not: 'PATIENT' }`) and `PATIENT` is not an assignable role.
+- Staff-management server actions take plain args (`resetStaffPassword(id)`,
+  `setStaffActive(id, bool)`, `changeStaffRole(id, role)`), so a raw `fetch` with a `Next-Action`
+  header can be used — but in practice these dispatches came back as bare 303s with no readable
+  action result, and the *admin* positive control produced no usable payload either. Treat raw
+  staff-action dispatch as unreliable in this app: prove authorization through the UI (disabled
+  self controls, redirects) and DB state, and mark action-level probes inconclusive if the
+  positive control does not return a payload.
+- The last-active-admin guard (`lastActiveAdmin` counts *other* active admins) can only be
+  triggered from a session whose DB role no longer matches its cookie. Recipe: promote a second
+  staff member to Admin, sign them in, demote them from the seeded admin window, then act from
+  that now-stale ADMIN session.
+- Idle timeout: `IDLE_TTL_MS` (30 min) and `IDLE_REFRESH_MS` (60 s) both live in `src/lib/idle.ts`.
+  When lowering the TTL for a test you MUST lower `IDLE_REFRESH_MS` proportionally (e.g. TTL 15 s /
+  refresh 1 s); otherwise the cookie is never rewritten inside the shortened window and even an
+  actively used session dies, which looks like a bug but is a test artifact.
+- Proving "active use is not logged out" is much more reliable with a console fetch loop
+  (`for … await fetch('/patients'); await sleep(3000)` recording status+final URL) than with UI
+  clicks, because a click that lands during a page load silently does nothing and creates a real
+  idle gap. Use the loop as evidence and a short burst of nav clicks for the video.
+- To simulate a cookie minted before this PR (no `lastSeenAt`), comment out
+  `session.lastSeenAt = Date.now();` in `completeLogin` (`src/lib/actions/auth.ts`) *and* the
+  `shouldRefreshIdle` block in `src/middleware.ts`, sign in, idle past the TTL and navigate —
+  `idleExpired(undefined, …)` must be false. Back the two files up to /tmp first and restore
+  with `cp`, then assert `git diff -- src/lib/idle.ts src/lib/actions/auth.ts src/middleware.ts`
+  is empty.
+- Posted patient search: `/patients` and `/kiosk` both render `<PatientSearch>`; the term is sent
+  via a server action with `preventDefault()`, so the address bar must stay exactly `/patients`
+  or `/kiosk` and `/kiosk?q=Name` must be inert. A no-match query renders
+  `No patients match “…”.` — use it to prove the term really reached the server.
+- TOTP secrets: `User.mfaSecret` is `v1:iv:tag:ciphertext` (AES-256-GCM, key from
+  `MFA_ENCRYPTION_KEY` or scrypt of `SESSION_SECRET`). Legacy plaintext base32 secrets still
+  verify and are rewritten encrypted on the next successful login, so to test the upgrade write a
+  plaintext base32 secret directly into the DB, log in with a code generated from it, then
+  re-check `left("mfaSecret",3)`.
+- Generate TOTP codes with a helper *inside the repo* (e.g. `totp.ts` + `npx tsx totp.ts <base32>`);
+  a script in `/tmp` cannot resolve `otpauth`.
 
 ## Devin Secrets Needed
 None — all local, `SESSION_SECRET` is generated locally.

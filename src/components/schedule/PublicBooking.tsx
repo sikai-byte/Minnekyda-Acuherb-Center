@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { SlotPicker, type PickerPractitioner, type PickerService } from './SlotPicker';
+import { SlotPicker, type PickerAppointmentType, type PickerPractitioner } from './SlotPicker';
+import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
 import { publicOpenSlots, requestPublicBooking } from '@/lib/actions/publicBooking';
 
 const WHEN = new Intl.DateTimeFormat('en-US', {
@@ -10,7 +11,7 @@ const WHEN = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
   hour: 'numeric',
   minute: '2-digit',
-  timeZone: 'UTC',
+  timeZone: CLINIC_TIME_ZONE,
 });
 
 type Confirmation = { reference: string; when: string };
@@ -18,11 +19,11 @@ type Confirmation = { reference: string; when: string };
 /// Identity and contact details only. There is no symptom or reason box here by design: a
 /// stranger on the open internet must not be able to put health information into this system.
 export function PublicBooking({
-  services,
+  appointmentTypes,
   practitioners,
   horizonDays,
 }: {
-  services: PickerService[];
+  appointmentTypes: PickerAppointmentType[];
   practitioners: PickerPractitioner[];
   horizonDays: number;
 }) {
@@ -45,9 +46,10 @@ export function PublicBooking({
 
   return (
     <SlotPicker
-      services={services}
+      appointmentTypes={appointmentTypes}
       practitioners={practitioners}
       loadSlots={publicOpenSlots}
+      allowAnyPractitioner
       submit={async (formData) => {
         const result = await requestPublicBooking(formData);
         if (result.reference && result.when) {

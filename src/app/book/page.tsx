@@ -1,7 +1,7 @@
 import Link from 'next/link';
 import { PublicBooking } from '@/components/schedule/PublicBooking';
-import { bookablePractitioners, bookableServices } from '@/lib/scheduling/availability';
-import { BOOKING_HORIZON_DAYS } from '@/lib/scheduling/slots';
+import { bookableAppointmentTypes, bookablePractitioners } from '@/lib/scheduling/availability';
+import { schedulingSettings } from '@/lib/scheduling/policy';
 
 export const dynamic = 'force-dynamic';
 
@@ -9,12 +9,13 @@ export const dynamic = 'force-dynamic';
 /// someone who has never been to the clinic. It shows open times and takes contact details,
 /// and it reads no charts, so it can neither confirm nor deny that anyone is a patient here.
 export default async function PublicBookingPage() {
-  const [services, practitioners] = await Promise.all([
-    bookableServices('public'),
+  const [appointmentTypes, practitioners, settings] = await Promise.all([
+    bookableAppointmentTypes('public'),
     bookablePractitioners(),
+    schedulingSettings(),
   ]);
 
-  const open = services.length > 0 && practitioners.length > 0;
+  const open = appointmentTypes.length > 0 && practitioners.length > 0;
 
   return (
     <div className="min-h-screen">
@@ -40,9 +41,9 @@ export default async function PublicBookingPage() {
         {open ? (
           <div className="card mt-8">
             <PublicBooking
-              services={services}
+              appointmentTypes={appointmentTypes}
               practitioners={practitioners}
-              horizonDays={BOOKING_HORIZON_DAYS}
+              horizonDays={settings.bookingHorizonDays}
             />
           </div>
         ) : (

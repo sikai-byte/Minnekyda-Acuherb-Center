@@ -81,7 +81,7 @@ const ROOMS = ['Room 1', 'Room 2', 'Room 3', 'Room 4', 'Room 5'];
 
 /// Visit types. The first consultation is longer because the intake and the treatment happen
 /// in the same appointment, and it is the only thing a stranger may book on the website.
-const SERVICES = [
+const APPOINTMENT_TYPES = [
   {
     slug: 'first-consultation',
     name: 'First consultation & treatment',
@@ -151,17 +151,25 @@ async function main() {
     }
   }
 
-  for (const name of ROOMS) {
-    await prisma.room.upsert({ where: { name }, update: { active: true }, create: { name } });
-  }
-
-  for (const service of SERVICES) {
-    await prisma.service.upsert({
-      where: { slug: service.slug },
-      update: { ...service, active: true },
-      create: { ...service, active: true },
+  for (const [index, name] of Array.from(ROOMS.entries())) {
+    await prisma.treatmentRoom.upsert({
+      where: { name },
+      update: { active: true, position: index },
+      create: { name, position: index },
     });
   }
+
+  for (const appointmentType of APPOINTMENT_TYPES) {
+    await prisma.appointmentType.upsert({
+      where: { slug: appointmentType.slug },
+      update: { ...appointmentType, active: true },
+      create: { ...appointmentType, active: true },
+    });
+  }
+
+  /// The capacity policy exists as a row so the clinic can change it without a deploy. Seeded
+  /// at its conservative defaults; see the schema for what still needs the clinic's answer.
+  await prisma.schedulingPolicy.upsert({ where: { id: 'default' }, update: {}, create: {} });
 
   /// Working hours belong to a practitioner, not the clinic, so a second practitioner can keep
   /// different days without touching anyone else's calendar.
@@ -170,14 +178,16 @@ async function main() {
     select: { id: true },
   });
   if (practitioner) {
-    await prisma.availabilityRule.deleteMany({ where: { practitionerId: practitioner.id } });
-    await prisma.availabilityRule.createMany({
+    await prisma.practitionerAvailability.deleteMany({
+      where: { practitionerId: practitioner.id },
+    });
+    await prisma.practitionerAvailability.createMany({
       data: CLINIC_HOURS.map((hours) => ({ ...hours, practitionerId: practitioner.id })),
     });
   }
 
   console.log(
-    `Seeded ${STAFF.length} staff users, intake form v${minnekydaIntakeV1.version}, ${TEMPLATES.length} note templates, ${ROOMS.length} rooms, ${SERVICES.length} services.`,
+    `Seeded ${STAFF.length} staff users, intake form v${minnekydaIntakeV1.version}, ${TEMPLATES.length} note templates, ${ROOMS.length} rooms, ${APPOINTMENT_TYPES.length} appointment types.`,
   );
 }
 
