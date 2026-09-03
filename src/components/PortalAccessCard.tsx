@@ -54,6 +54,9 @@ export function PortalAccessCard({
           <p className="mt-1 font-mono text-lg">{state.temporaryPassword}</p>
           <p className="mt-1 text-xs text-clay-600">
             It is not shown again and must be changed the first time they sign in.
+            {state.emailed
+              ? ' We have also emailed it to them.'
+              : ' Email is not going out, so read it to them.'}
           </p>
         </div>
       ) : null}

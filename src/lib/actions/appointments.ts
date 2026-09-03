@@ -4,6 +4,8 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { requireRole } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { prisma } from '@/lib/db';
+import { notifyAppointment, notifyRescheduled } from '@/lib/email/notifications';
 import { getAvailableSlots } from '@/lib/scheduling/availability';
 import {
   applyLifecycle,
@@ -81,6 +83,11 @@ export async function bookForPatient(formData: FormData): Promise<AppointmentAct
     detail: { source: 'STAFF', startsAt: result.startsAt.toISOString() },
   });
 
+  /// After the audit row, and awaited rather than fired off: a server action's work stops when
+  /// it returns. A provider outage cannot fail the booking — `notifyAppointment` never throws —
+  /// but it is recorded as a failed send the front desk can see.
+  await notifyAppointment(result.appointmentId, 'APPOINTMENT_BOOKED');
+
   revalidatePath('/schedule');
   revalidatePath(`/patients/${parsed.data.patientId}`);
   return { booked: result.appointmentId };
@@ -92,6 +99,13 @@ export async function rescheduleAppointment(
 ): Promise<AppointmentActionState> {
   const user = await requireRole([...SCHEDULING_ROLES]);
   if (Number.isNaN(Date.parse(startsAtIso))) return { error: 'Pick a time.' };
+
+  /// Read before the move: the row will hold the new time afterwards, and the patient's notice
+  /// has to say which appointment moved.
+  const before = await prisma.appointment.findUnique({
+    where: { id: appointmentId },
+    select: { startsAt: true },
+  });
 
   const result = await moveAppointment({
     appointmentId,
@@ -107,6 +121,8 @@ export async function rescheduleAppointment(
     entityId: result.appointmentId,
     detail: { startsAt: result.startsAt.toISOString() },
   });
+
+  if (before) await notifyRescheduled(result.appointmentId, before.startsAt);
 
   revalidatePath('/schedule');
   return { booked: result.appointmentId };
@@ -161,6 +177,16 @@ export async function setAppointmentStatus(
     patientId: result.patientId,
     detail: { to: result.status },
   });
+
+  /// The two transitions a patient needs to hear about. Check-in and completion happen with the
+  /// patient in the building, and a no-show is a conversation, not an email.
+  if (result.changed) {
+    if (result.status === 'CANCELLED') {
+      await notifyAppointment(appointmentId, 'APPOINTMENT_CANCELLED');
+    } else if (result.status === 'SCHEDULED') {
+      await notifyAppointment(appointmentId, 'APPOINTMENT_CONFIRMED');
+    }
+  }
 
   revalidatePath('/schedule');
   revalidatePath(`/patients/${result.patientId}`);
