@@ -294,6 +294,26 @@ app up and exercise it end to end.
 | `npm run db:seed` | staff users, intake form v1, note templates, rooms, services, working hours |
 | `npm run db:push` | sync schema without a migration (development only) |
 
+## Synthetic pilot deployment (Railway)
+
+The pilot runs on Railway with synthetic data only — no BAA, so no real patient may be entered.
+Project `minnekyda-pilot`: a Nixpacks-built `web` service and a `postgres` service with a volume.
+`web` needs `DATABASE_URL` (a `${{postgres.DATABASE_URL}}` reference), `SESSION_SECRET`,
+`MFA_ENCRYPTION_KEY`, `SECURE_COOKIES=true`, `CLINIC_TIME_ZONE`.
+
+Railway ignores `deploy.startCommand` in `railway.json` here and boots `npm start`, so migrations
+and seeding are run deliberately from a workstation against a temporary Postgres TCP proxy rather
+than on every container boot:
+
+```bash
+railway up --service web                       # RAILWAY_TOKEN = a project token
+DATABASE_URL=<proxy url> npx prisma migrate deploy
+DATABASE_URL=<proxy url> NODE_ENV=production SEED_PASSWORD=<temp> npx prisma db seed
+```
+
+The seed refuses to run with the development password when `NODE_ENV=production`. Delete the TCP
+proxy afterwards: the database should not have a public endpoint between maintenance windows.
+
 ## Before real patients
 
 Launch gates, not nice-to-haves:
