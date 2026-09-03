@@ -293,6 +293,19 @@ text columns from that structure on every save (`composeNoteText`).
 - Scheduling runs want a genuinely empty day — `npx prisma migrate reset --force --skip-generate`
   rather than re-seeding over a dirty database, or leftover appointments will move the slot lists
   you are asserting exactly.
+- **After any `migrate reset`, sign out and sign in again in every open browser window.** The
+  iron-session cookie survives the reset and still carries the *old* user id, so pages render
+  normally (header still shows the role) but any write that stamps an actor fails with
+  `Something went wrong` / HTTP 500 and `Foreign key constraint violated on
+  AppointmentEvent_actorId_fkey` (also `AuditLog_userId_fkey` in the dev log). This is a test
+  artifact, not a product bug — check `/tmp/dev.log` before reporting it. There is no `/logout`
+  route (404); use the header `Sign out` button.
+- If a Chrome window stops responding to `ctrl+l`/typing (screenshot never changes, xdotool
+  reports it as the active window), the renderer is wedged: close it with
+  `wmctrl -i -c <winid>` and continue in another window rather than retrying keystrokes.
+- Typing a URL with the `type` action occasionally drops the `:` and Chrome falls back to a Google
+  search (which may hit a reCAPTCHA page). Type the full `http://localhost:3000/...` form and send
+  `Return` as a separate action, then verify the reported page URL.
 - `/schedule/<appointmentId>` is the append-only `AppointmentEvent` history (staff roles only) and
   is the place to assert who/what/when: each row carries actor name, actor role, source
   (`staff`/`portal`/`public`) and the status transition. Row count must only grow.
