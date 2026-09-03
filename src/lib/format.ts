@@ -1,3 +1,7 @@
+import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
+
+/// A date of birth or a visit date is a plain calendar date stored at midnight UTC, so it is
+/// read back in UTC or it shifts a day.
 const DATE_FORMAT = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
@@ -5,12 +9,16 @@ const DATE_FORMAT = new Intl.DateTimeFormat('en-US', {
   timeZone: 'UTC',
 });
 
+/// An instant, on the other hand, is shown on the clinic's clock. Without the zone this
+/// followed whatever the server happened to be set to, which showed a 3:30pm appointment as
+/// 8:30pm — the kind of thing the front desk reads out loud to a patient.
 const DATE_TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
   month: 'short',
   day: 'numeric',
   year: 'numeric',
   hour: 'numeric',
   minute: '2-digit',
+  timeZone: CLINIC_TIME_ZONE,
 });
 
 export function formatDate(value: Date | string | null | undefined): string {

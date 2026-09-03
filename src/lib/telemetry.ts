@@ -12,7 +12,7 @@ type ClinicEventInput = {
   appointmentId?: string | null;
   submissionId?: string | null;
   noteId?: string | null;
-  serviceId?: string | null;
+  appointmentTypeId?: string | null;
   roomId?: string | null;
   source?: BookingSource | null;
   minutes?: number | null;
@@ -69,7 +69,7 @@ export async function recordEvent(input: ClinicEventInput): Promise<void> {
         appointmentId: input.appointmentId ?? null,
         submissionId: input.submissionId ?? null,
         noteId: input.noteId ?? null,
-        serviceId: input.serviceId ?? null,
+        appointmentTypeId: input.appointmentTypeId ?? null,
         roomId: input.roomId ?? null,
         source: input.source ?? null,
         minutes: input.minutes ?? null,

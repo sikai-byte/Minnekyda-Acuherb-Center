@@ -7,8 +7,8 @@ import {
 import { prisma } from '@/lib/db';
 import { requirePatient } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
-import { bookablePractitioners, bookableServices } from '@/lib/scheduling/availability';
-import { BOOKING_HORIZON_DAYS, SELF_CANCEL_NOTICE_HOURS } from '@/lib/scheduling/slots';
+import { bookableAppointmentTypes, bookablePractitioners } from '@/lib/scheduling/availability';
+import { schedulingSettings } from '@/lib/scheduling/policy';
 
 export const dynamic = 'force-dynamic';
 
@@ -17,17 +17,21 @@ export const dynamic = 'force-dynamic';
 export default async function PortalAppointmentsPage() {
   const { user, patientId } = await requirePatient();
 
-  const [patient, upcoming, past, services, practitioners] = await Promise.all([
+  const [patient, upcoming, past, appointmentTypes, practitioners, settings] = await Promise.all([
     prisma.patient.findUnique({ where: { id: patientId }, select: { firstName: true } }),
     prisma.appointment.findMany({
-      where: { patientId, status: { in: ['REQUESTED', 'BOOKED', 'CHECKED_IN'] }, startsAt: { gt: new Date() } },
+      where: {
+        patientId,
+        status: { in: ['REQUESTED', 'SCHEDULED', 'CHECKED_IN'] },
+        startsAt: { gt: new Date() },
+      },
       orderBy: { startsAt: 'asc' },
       select: {
         id: true,
         startsAt: true,
         status: true,
-        service: { select: { name: true, minutes: true } },
-        practitioner: { select: { name: true, credentials: true } },
+        appointmentType: { select: { id: true, name: true, minutes: true } },
+        practitioner: { select: { id: true, name: true, credentials: true } },
       },
     }),
     prisma.appointment.findMany({
@@ -38,12 +42,13 @@ export default async function PortalAppointmentsPage() {
         id: true,
         startsAt: true,
         status: true,
-        service: { select: { name: true } },
-        practitioner: { select: { name: true } },
+        appointmentType: { select: { id: true, name: true, minutes: true } },
+        practitioner: { select: { id: true, name: true } },
       },
     }),
-    bookableServices('portal'),
+    bookableAppointmentTypes('portal'),
     bookablePractitioners(),
+    schedulingSettings(),
   ]);
   if (!patient) return null;
 
@@ -54,15 +59,16 @@ export default async function PortalAppointmentsPage() {
     patientId,
   });
 
-  const canBook = upcoming.length === 0 && services.length > 0 && practitioners.length > 0;
+  const canBook =
+    upcoming.length === 0 && appointmentTypes.length > 0 && practitioners.length > 0;
 
   return (
     <PortalShell name={patient.firstName}>
       <header className="mb-8">
         <h1 className="text-2xl font-semibold tracking-tight">My appointments</h1>
         <p className="mt-1 text-sm text-clay-600">
-          Book, check or cancel a visit. Cancellations inside {SELF_CANCEL_NOTICE_HOURS} hours need
-          a phone call.
+          Book, move or cancel a visit. Changes inside {settings.selfRescheduleNoticeHours} hours
+          and cancellations inside {settings.selfCancelNoticeHours} hours need a phone call.
         </p>
       </header>
 
@@ -72,7 +78,11 @@ export default async function PortalAppointmentsPage() {
           {upcoming.length === 0 ? (
             <p className="text-sm text-clay-600">Nothing booked.</p>
           ) : (
-            <UpcomingAppointments appointments={upcoming} />
+            <UpcomingAppointments
+              appointments={upcoming}
+              rescheduleNoticeHours={settings.selfRescheduleNoticeHours}
+              horizonDays={settings.bookingHorizonDays}
+            />
           )}
         </section>
 
@@ -82,9 +92,9 @@ export default async function PortalAppointmentsPage() {
           </h2>
           {canBook ? (
             <PortalBooking
-              services={services}
+              appointmentTypes={appointmentTypes}
               practitioners={practitioners}
-              horizonDays={BOOKING_HORIZON_DAYS}
+              horizonDays={settings.bookingHorizonDays}
             />
           ) : (
             <p className="text-sm text-clay-600">

@@ -25,7 +25,7 @@ export default async function PatientChartPage({ params }: { params: { id: strin
         orderBy: { startsAt: 'desc' },
         take: 10,
         include: {
-          service: { select: { name: true } },
+          appointmentType: { select: { name: true } },
           practitioner: { select: { name: true } },
         },
       },
@@ -118,7 +118,7 @@ export default async function PatientChartPage({ params }: { params: { id: strin
                     <div>
                       <p className="font-medium">{formatDateTime(appointment.startsAt)}</p>
                       <p className="text-xs text-clay-500">
-                        {appointment.service.name} · {appointment.practitioner.name}
+                        {appointment.appointmentType.name} · {appointment.practitioner.name}
                       </p>
                     </div>
                     <span className="badge bg-clay-100 text-clay-700">

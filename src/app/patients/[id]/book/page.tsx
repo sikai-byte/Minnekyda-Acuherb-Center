@@ -5,21 +5,22 @@ import { StaffBooking } from '@/components/schedule/StaffBooking';
 import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { patientName } from '@/lib/format';
-import { bookablePractitioners, bookableServices } from '@/lib/scheduling/availability';
-import { BOOKING_HORIZON_DAYS } from '@/lib/scheduling/slots';
+import { bookableAppointmentTypes, bookablePractitioners } from '@/lib/scheduling/availability';
+import { schedulingSettings } from '@/lib/scheduling/policy';
 
 export const dynamic = 'force-dynamic';
 
 export default async function BookForPatientPage({ params }: { params: { id: string } }) {
   await requireUser();
 
-  const [patient, services, practitioners] = await Promise.all([
+  const [patient, appointmentTypes, practitioners, settings] = await Promise.all([
     prisma.patient.findUnique({
       where: { id: params.id },
       select: { id: true, firstName: true, lastName: true },
     }),
-    bookableServices('staff'),
+    bookableAppointmentTypes('staff'),
     bookablePractitioners(),
+    schedulingSettings(),
   ]);
   if (!patient) notFound();
 
@@ -39,9 +40,9 @@ export default async function BookForPatientPage({ params }: { params: { id: str
         <div className="card">
           <StaffBooking
             patientId={patient.id}
-            services={services}
+            appointmentTypes={appointmentTypes}
             practitioners={practitioners}
-            horizonDays={BOOKING_HORIZON_DAYS}
+            horizonDays={settings.bookingHorizonDays}
           />
         </div>
       )}

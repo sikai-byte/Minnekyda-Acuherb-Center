@@ -16,10 +16,10 @@ entered anywhere hosted until the hosting BAA is signed (see [Before real patien
 | Patient charts and demographics | **Built** | `src/app/patients` |
 | Staff accounts, roles, MFA, audit log | **Built** | `src/app/admin`, `src/lib/actions/staff.ts`, `src/lib/audit.ts` |
 | Patient portal (own paperwork and visit dates only) | **Built** | `src/app/portal`, `src/lib/portalScope.ts` |
-| Scheduling: staff calendar, portal booking, public website booking | **Built** | `src/app/schedule`, `src/app/book`, `src/lib/scheduling`, `src/lib/actions/appointments.ts` |
+| Scheduling: capacity domain, staff schedule, portal booking, public website booking | **Built** | `src/app/schedule`, `src/app/book`, `src/lib/scheduling`, `src/lib/actions/appointments.ts` |
 | Operational telemetry and the operations report | **Built** | `src/lib/telemetry.ts`, `src/lib/metrics`, `src/app/admin/metrics` |
 | Payments and Stripe reconciliation | **Not built** | — |
-| Reporting (visits, weekly occupancy) | **Partly built** — operations report exists; the weekly capacity report does not | `src/app/admin/metrics` |
+| Reporting (visits, weekly capacity) | **Built** | `src/app/admin/metrics`, `src/app/schedule/capacity`, `src/lib/scheduling/capacity.ts` |
 | Insurance billing | **Out of scope** for now, planned later | — |
 | Scanning historical paper charts | **Out of scope** for now, planned later | — |
 | Deployment / hosting | **Not done** — runs locally only | — |
@@ -62,10 +62,9 @@ every report follows.
   starts — not five patients per hour).
 
 Rooms and visit types are seeded rows, not constants, so adding a sixth room or a new visit length
-is a seed edit. Working hours belong to a practitioner (`AvailabilityRule`), seeded as Mon–Fri
-9–5 and Sat 9–1. Times are stored and rendered in UTC throughout, so a deployment must run in the
-clinic's timezone until an explicit clinic-timezone setting exists — a gap to close before the
-first real booking.
+is a seed edit. Working hours belong to a practitioner (`PractitionerAvailability`), seeded as
+Mon–Fri 9–5 and Sat 9–1. Instants are stored in UTC and every calendar question is asked in the
+clinic's own timezone — see [Scheduling](#scheduling-and-public-booking).
 
 ## Stack
 
@@ -92,13 +91,24 @@ click-accept BAA.
 - **`ClinicalNote`** — the visit note. Tap-first selections live in `fieldsJson` and are composed
   into the text columns; signing sets `signedAt` and freezes the row. Corrections are a new row
   pointing back through `amendsId`, never an edit.
-- **`Service`** — a bookable visit type: `minutes`, `publiclyBookable`, and `firstVisit` (the only
-  kind a stranger may book on the website).
-- **`Room`** — a treatment room. The count of active rooms is the ceiling on overlapping visits.
-- **`AvailabilityRule`** / **`TimeOff`** — a practitioner's weekly working minutes, and closures.
-- **`Appointment`** — patient, practitioner, service, room, start, end, status
-  (`REQUESTED` → `BOOKED` → `CHECKED_IN` → `COMPLETED`, or `CANCELLED` / `NO_SHOW`) and `source`
-  (`STAFF` / `PORTAL` / `PUBLIC`). Scheduling logistics only, by design.
+- **`AppointmentType`** — a bookable visit type and the *only* place a duration comes from:
+  `minutes`, `publiclyBookable`, `firstVisit` (the only kind a stranger may book on the website),
+  and the practitioner-active phases `practitionerLeadMinutes` / `practitionerCloseMinutes`. No
+  client ever submits a length.
+- **`TreatmentRoom`** — a treatment table. The count of active rooms is the ceiling on
+  concurrent visits.
+- **`PractitionerAvailability`** / **`ClinicClosure`** — a practitioner's weekly working minutes,
+  and closures (clinic-wide when `practitionerId` is null, otherwise one practitioner's time off).
+- **`SchedulingPolicy`** — the single configurable row: start increment, booking horizon, minimum
+  notice, the patient self-cancel and self-reschedule windows, whether website bookings confirm
+  themselves, and the practitioner concurrency ceiling.
+- **`Appointment`** — patient, practitioner, appointment type, room, start, end, status
+  (`REQUESTED` → `SCHEDULED` → `CHECKED_IN` → `COMPLETED`, or `CANCELLED` / `NO_SHOW`), `source`
+  (`STAFF` / `PORTAL` / `PUBLIC`) and the lifecycle timestamps. Scheduling logistics only, by
+  design. Indexed on `startsAt` and on `startsAt` per practitioner, patient, room and status.
+- **`AppointmentEvent`** — append-only scheduling history: what type of change, by which actor in
+  which role through which door, and the before/after status, start, room and practitioner. Typed
+  columns, never a free-text field, so history cannot become a second clinical record.
 - **`BookingAttempt`** — source addresses of public booking submissions, for throttling. Holds no
   identity.
 - **`AuditLog`** — every chart view, intake submission, and note write, with user, IP, and user
@@ -166,29 +176,91 @@ access from the "Patient portal" card on the chart; the one-time password is sho
 
 ### Scheduling and public booking
 
-The calendar has three doors and one set of rules. `src/lib/scheduling/slots.ts` is pure: it
-generates quarter-hour starts inside a practitioner's working minutes and rejects a slot unless
-that practitioner is free and some room is free for the whole visit. `bookAppointment` re-runs the
-same check inside the transaction that writes the row, under a per-day advisory lock, because a
-browser is always looking at a stale list — two people clicking the same 3pm is normal, and only
-one of them may get it.
+**One availability service.** `getAvailableSlots({ practitionerId, appointmentTypeId, date })` in
+`src/lib/scheduling/availability.ts` is the sole source of truth for what can be booked, and staff
+booking, the portal, the public site and any future API all go through it. Nothing in a client
+component computes availability: a browser that could decide what is free could also decide to
+double-book a room. `src/lib/scheduling/slots.ts` under it is pure and takes no database — which
+is how the expected start times can be asserted exactly in tests.
 
-- **Staff** (`/schedule`, and Book on a chart) see the day room by room and drive the status:
-  confirm a website request, check in, complete, cancel, no-show. Cancelling frees the room;
-  the row stays, because attendance is what reporting has to explain.
+**Duration is server-side.** It is read from `AppointmentType`, so a tampered form cannot book a
+15-minute treatment or a six-hour one.
+
+**Timezone.** Instants are stored in UTC; every question about a day, a start time or a working
+window is asked in `America/Chicago` (`CLINIC_TIME_ZONE`) through `src/lib/scheduling/time.ts`. A
+clinic day ends at the next local midnight rather than 24 hours later, the spring-forward hour is
+rejected as a start time because it does not exist, and the repeated fall-back hour resolves to
+its first occurrence.
+
+**Room occupancy and practitioner capacity are separate.** A room is held for the whole visit; the
+practitioner is only needed for part of it. Each `AppointmentType` declares those parts —
+`practitionerLeadMinutes` and `practitionerCloseMinutes` — and the clinic's are 15 and 15 on a
+60-minute treatment and 30 and 15 on a 75-minute first consultation. The stretch between them is
+retention, when the practitioner is free to start someone else, and it is what makes quarter-hour
+staggering work: a 9:00 treatment and a 9:15 treatment can share a practitioner, while 9:45 cannot,
+because the first patient's needles come out then. Leaving both columns null counts the whole visit
+as practitioner time, which is the conservative fallback for any new visit type.
+`SchedulingPolicy.maxConcurrentPerPractitioner` (1 today) is a separate ceiling on genuinely
+simultaneous work. All of it is row data, not code.
+
+**Writes re-check and lock.** Every write in `src/lib/scheduling/booking.ts` re-runs the same
+rules inside its transaction under a per-clinic-day advisory lock, because a browser is always
+looking at a stale list — two people clicking the same 3pm is normal, and only one may get it. A
+reschedule holds both the old and the new day, in date order so opposing moves cannot deadlock,
+and updates the row in place only once the new time is secured: a failed move leaves the patient
+with the appointment they had. Cancelling and no-showing release the time immediately;
+completed visits keep it, because they happened.
+
+**History is append-only.** Booking, confirming, moving, changing room or practitioner, checking
+in, completing, cancelling and no-showing each write an `AppointmentEvent` in the same transaction
+as the change, so an admin can reconstruct who did what and when at `/schedule/<id>` — staff only,
+even for a patient's own visit.
+
+- **Staff** (`/schedule`, and Book on a chart) see the day whole-clinic or by practitioner and
+  drive the status in one tap: confirm a website request, check in, complete, cancel, no-show,
+  change room, open the chart, or start the visit note with the patient, practitioner, date and
+  appointment already attached. Cancelling frees the room; the row stays, because attendance is
+  what reporting has to explain. `/schedule/capacity` is the weekly capacity report — booked,
+  completed, cancelled, no-shows, first vs returning visits, fill rate, attendance rates,
+  practitioner and room utilisation, and where the week is still open.
 - **Patients** (`/portal/appointments`) book for themselves with two hours' notice, one future
-  visit at a time, and cancel outside 24 hours. The patient id comes from the session, so no id in
-  a request can point at anyone else.
+  visit at a time, move a visit themselves outside 48 hours, and cancel outside 24 hours. Inside
+  those windows the portal says to call the clinic rather than offering a button that would fail. A
+  self-reschedule keeps the same visit row, practitioner and visit type — the patient chooses only
+  the time, from the same availability service staff use — so the history stays continuous. The
+  patient id comes from the session, so no id in a request can point at anyone else.
 - **The public** (`/book`) is the front door for a first-time consultation, and it is the only
   unauthenticated write in the product. It reads no chart — never looking anyone up by name, email
   or date of birth — so it cannot be asked a question whose answer reveals whether somebody is a
   patient here; a returning visitor simply produces a second chart for the front desk to merge. It
   takes identity and contact details only, throttles by source address (5/hour, 20/day), offers
-  only first-visit services, and lands as a `REQUESTED` appointment that holds the room until the
-  front desk confirms it. The confirmation screen shows a six-character reference, not a row id.
+  only first-visit services, and books the visit outright: someone who picked a time has an
+  appointment, and the screen tells them so. Setting `SchedulingPolicy.publicRequestsAutoConfirm`
+  to false returns to `REQUESTED`, where the room is still held but the front desk confirms it. The
+  confirmation screen shows a six-character reference, not a row id.
 
 No confirmation email or SMS is sent yet: that needs a BAA'd provider, and even then would carry
 the time and the clinic's name only.
+
+**Known limitations.**
+
+- Practitioner phases are per visit type, not per practitioner: a faster or slower clinician cannot
+  yet be modelled separately.
+- A practitioner change is available through a reschedule, not as a standalone action.
+- The public door creates a second chart for a returning visitor to merge, deliberately: looking
+  anyone up by name or date of birth would answer "is this person a patient here" to a stranger.
+- Availability is computed per request with no cache; fine at this size, and the query shapes and
+  indexes are built for a five-figure appointment history.
+- Reporting counts scheduled minutes, not the clock: a visit that overran is still 60 minutes.
+
+**Follow-ups for the clinic.**
+
+1. Whether the 15/15 and 30/15 practitioner phases hold on a busy day, or want a margin between
+   one patient's needles out and the next patient's in.
+2. Minimum notice for patient self-booking (2 hours today) and whether a patient may hold more than
+   one future visit (one today).
+3. What the front desk should see when a website booking lands, now that it is confirmed rather
+   than queued for review.
 
 ## Local development
 
@@ -216,6 +288,7 @@ app up and exercise it end to end.
 | `npm run build` / `npm start` | production build and serve |
 | `npm run lint` / `npm run typecheck` | ESLint / `tsc --noEmit` |
 | `npm test` | Vitest, including the authorization audit |
+| `npm run test:db` | scheduling integration suite against a real Postgres (concurrency, locking, RBAC) |
 | `npm run db:migrate` | create a migration |
 | `npm run db:drift` | fail if committed migrations no longer match `schema.prisma` |
 | `npm run db:seed` | staff users, intake form v1, note templates, rooms, services, working hours |
@@ -235,12 +308,14 @@ Launch gates, not nice-to-haves:
    paper packet.
 6. Access review, PHI-in-logs re-audit, and an independent penetration test.
 7. Load / soak / cold-start testing against Cloud Run + Cloud SQL connection limits.
-8. Set the clinic's timezone explicitly rather than relying on the deployment running in UTC-equal
-   local time, and decide who sends booking confirmations (a BAA'd email provider, or the phone).
+8. Decide who sends booking confirmations (a BAA'd email provider, or the phone), and confirm the
+   scheduling follow-ups above with clinic staff before the first real booking.
 
 ## Build history
 
 Stacked branches, each reviewed as its own PR: intake + notes MVP (#1) → security hardening (#2) →
 patient portal (#3) → operational hardening: staff management, idle timeout, posted search,
 encrypted TOTP secrets (#4) → the scope README (#5) → scheduling: staff calendar, portal booking,
-public website booking (#6). Payments and reporting are next.
+public website booking (#6) → telemetry and the operations report (#7) → the scheduling capacity
+domain: clinic timezone, appointment types, capacity policy, appointment history, weekly capacity
+report (#8). Payments are next.

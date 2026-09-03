@@ -49,3 +49,8 @@ jobs:
       - run: npx prisma migrate deploy
       - run: npm run db:drift
       - run: npm run db:seed
+      # Concurrency, advisory locks and transactional rescheduling can only be proven against
+      # a real Postgres, so the scheduling integration suite runs here rather than in `npm test`.
+      - run: npm run test:db
+        env:
+          SESSION_SECRET: ci-session-secret-that-is-long-enough-32

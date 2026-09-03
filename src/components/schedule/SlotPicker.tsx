@@ -1,20 +1,32 @@
 'use client';
 
-import { useEffect, useState, useTransition } from 'react';
+import { useEffect, useMemo, useState, useTransition } from 'react';
+import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
 
 /// The one booking control, shared by the front desk, the patient portal and the public
-/// website. Each caller passes its own loader and its own submit action, so the three
-/// surfaces cannot drift apart on the rules — and none of them offers a free-text box, which
-/// is what keeps health information off the calendar.
+/// website. Each caller passes its own loader and its own submit action, and the open times
+/// always come from the server's canonical availability service — this component does no
+/// scheduling arithmetic of its own, so the three surfaces cannot drift apart on the rules.
+/// None of them offers a free-text box, which is what keeps health information off the
+/// calendar.
 
-export type PickerService = { id: string; name: string; minutes: number; description?: string | null };
+export type PickerAppointmentType = {
+  id: string;
+  name: string;
+  minutes: number;
+  description?: string | null;
+};
 export type PickerPractitioner = { id: string; name: string; credentials?: string | null };
 
 type SlotPickerProps = {
-  services: PickerService[];
+  appointmentTypes: PickerAppointmentType[];
   practitioners: PickerPractitioner[];
   /// Returns the open starts as ISO instants. Times only — never who holds the others.
-  loadSlots: (practitionerId: string, serviceId: string, isoDate: string) => Promise<string[]>;
+  loadSlots: (
+    practitionerId: string,
+    appointmentTypeId: string,
+    date: string,
+  ) => Promise<string[]>;
   submit: (formData: FormData) => Promise<{ error?: string }>;
   submitLabel: string;
   /// Extra inputs posted with the booking, e.g. the contact details a new patient gives on
@@ -22,24 +34,32 @@ type SlotPickerProps = {
   children?: React.ReactNode;
   onBooked?: () => void;
   horizonDays: number;
+  /// Patient-facing surfaces offer "any practitioner" first, because that is how most people
+  /// book; the server decides who actually takes the visit.
+  allowAnyPractitioner?: boolean;
 };
 
 const TIME_FORMAT = new Intl.DateTimeFormat('en-US', {
   hour: 'numeric',
   minute: '2-digit',
-  timeZone: 'UTC',
+  timeZone: CLINIC_TIME_ZONE,
 });
 
-function today(): string {
-  return new Date().toISOString().slice(0, 10);
-}
+const DATE_PARTS = new Intl.DateTimeFormat('en-CA', {
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  timeZone: CLINIC_TIME_ZONE,
+});
 
-function horizon(days: number): string {
-  return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+/// Clinic-local, not the visitor's device: a patient in another timezone still books against
+/// the clinic's day.
+function clinicDay(at: Date): string {
+  return DATE_PARTS.format(at);
 }
 
 export function SlotPicker({
-  services,
+  appointmentTypes,
   practitioners,
   loadSlots,
   submit,
@@ -47,10 +67,18 @@ export function SlotPicker({
   children,
   onBooked,
   horizonDays,
+  allowAnyPractitioner = false,
 }: SlotPickerProps) {
-  const [serviceId, setServiceId] = useState(services[0]?.id ?? '');
-  const [practitionerId, setPractitionerId] = useState(practitioners[0]?.id ?? '');
-  const [date, setDate] = useState(today());
+  const [appointmentTypeId, setAppointmentTypeId] = useState(appointmentTypes[0]?.id ?? '');
+  const [practitionerId, setPractitionerId] = useState(
+    allowAnyPractitioner ? '' : practitioners[0]?.id ?? '',
+  );
+  const today = useMemo(() => clinicDay(new Date()), []);
+  const latest = useMemo(
+    () => clinicDay(new Date(Date.now() + horizonDays * 24 * 60 * 60 * 1000)),
+    [horizonDays],
+  );
+  const [date, setDate] = useState(today);
   const [slots, setSlots] = useState<string[] | null>(null);
   const [chosen, setChosen] = useState('');
   const [error, setError] = useState<string | undefined>();
@@ -58,11 +86,11 @@ export function SlotPicker({
   const [pending, startTransition] = useTransition();
 
   useEffect(() => {
-    if (!serviceId || !practitionerId || !date) return;
+    if (!appointmentTypeId || !date) return;
     let current = true;
     setLoading(true);
     setChosen('');
-    loadSlots(practitionerId, serviceId, date)
+    loadSlots(practitionerId, appointmentTypeId, date)
       .then((open) => {
         if (current) setSlots(open);
       })
@@ -72,9 +100,9 @@ export function SlotPicker({
     return () => {
       current = false;
     };
-  }, [loadSlots, practitionerId, serviceId, date]);
+  }, [loadSlots, practitionerId, appointmentTypeId, date]);
 
-  const service = services.find((option) => option.id === serviceId);
+  const appointmentType = appointmentTypes.find((option) => option.id === appointmentTypeId);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -88,7 +116,7 @@ export function SlotPicker({
       if (result?.error) {
         setError(result.error);
         /// The slot may have gone while the form was open, so reload what is left.
-        setSlots(await loadSlots(practitionerId, serviceId, date));
+        setSlots(await loadSlots(practitionerId, appointmentTypeId, date));
         setChosen('');
         return;
       }
@@ -99,7 +127,7 @@ export function SlotPicker({
 
   return (
     <form onSubmit={handleSubmit} className="space-y-5">
-      <input type="hidden" name="serviceId" value={serviceId} />
+      <input type="hidden" name="appointmentTypeId" value={appointmentTypeId} />
       <input type="hidden" name="practitionerId" value={practitionerId} />
       <input type="hidden" name="startsAt" value={chosen} />
 
@@ -108,10 +136,10 @@ export function SlotPicker({
           <span className="label">Visit type</span>
           <select
             className="input"
-            value={serviceId}
-            onChange={(event) => setServiceId(event.target.value)}
+            value={appointmentTypeId}
+            onChange={(event) => setAppointmentTypeId(event.target.value)}
           >
-            {services.map((option) => (
+            {appointmentTypes.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.name} · {option.minutes} min
               </option>
@@ -125,6 +153,7 @@ export function SlotPicker({
             value={practitionerId}
             onChange={(event) => setPractitionerId(event.target.value)}
           >
+            {allowAnyPractitioner ? <option value="">Any practitioner</option> : null}
             {practitioners.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.name}
@@ -139,14 +168,16 @@ export function SlotPicker({
             type="date"
             className="input"
             value={date}
-            min={today()}
-            max={horizon(horizonDays)}
+            min={today}
+            max={latest}
             onChange={(event) => setDate(event.target.value)}
           />
         </label>
       </div>
 
-      {service?.description ? <p className="text-sm text-clay-600">{service.description}</p> : null}
+      {appointmentType?.description ? (
+        <p className="text-sm text-clay-600">{appointmentType.description}</p>
+      ) : null}
 
       <div>
         <span className="label">Open times</span>

@@ -1,46 +1,57 @@
-import type { AppointmentStatus, BookingSource, Prisma } from '@prisma/client';
+import type { AppointmentStatus, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { recordEvent } from '@/lib/telemetry';
+import { capacityPolicy, schedulingSettings, type SchedulingSettings } from './policy';
 import {
-  addMinutes,
   bookableSlots,
-  dayStart,
-  slotIsOpen,
+  type ActivePhases,
   type Busy,
   type Slot,
   type WorkingWindow,
 } from './slots';
+import { addDays, clinicDayEnd, clinicDayStart, clinicIsoDate, clinicWeekday, isIsoDate } from './time';
 
-/// Everything that reads or writes the calendar. Kept apart from the server actions so the
-/// staff, portal and public entry points share one set of rules: they differ only in who may
-/// call them and which patient they are allowed to name.
+/// The single source of truth for "when can this be booked".
+///
+/// Staff booking, portal booking, the public website and any future API all come through
+/// `getAvailableSlots`, and the booking transaction re-checks the same rules against the same
+/// tables. Nothing in a client component computes availability: a browser that could decide
+/// what is free could also decide to double-book a room.
 
-/// Statuses that still occupy a room and a practitioner. A cancellation or a no-show frees
-/// the time; a completed visit keeps it, because it happened.
+/// Statuses that still occupy a room and a practitioner. A cancellation or a no-show frees the
+/// time immediately; a completed visit keeps it, because it happened.
 export const OCCUPYING_STATUSES: AppointmentStatus[] = [
   'REQUESTED',
-  'BOOKED',
+  'SCHEDULED',
   'CHECKED_IN',
   'COMPLETED',
 ];
 
-/// A patient booking themselves gets a two-hour cushion so the front desk is never surprised
-/// by someone walking in ten minutes after clicking.
-export const SELF_BOOKING_NOTICE_MINUTES = 120;
+export type BookingScope = 'public' | 'portal' | 'staff';
 
 export async function activeRooms() {
-  return prisma.room.findMany({ where: { active: true }, orderBy: { name: 'asc' }, select: { id: true, name: true } });
+  return prisma.treatmentRoom.findMany({
+    where: { active: true },
+    orderBy: [{ position: 'asc' }, { name: 'asc' }],
+    select: { id: true, name: true },
+  });
 }
 
-export async function bookableServices(scope: 'public' | 'portal' | 'staff') {
-  return prisma.service.findMany({
+export async function bookableAppointmentTypes(scope: BookingScope) {
+  return prisma.appointmentType.findMany({
     where: {
       active: true,
       ...(scope === 'public' ? { publiclyBookable: true, firstVisit: true } : {}),
       ...(scope === 'portal' ? { publiclyBookable: true } : {}),
     },
     orderBy: { minutes: 'asc' },
-    select: { id: true, slug: true, name: true, description: true, minutes: true, firstVisit: true },
+    select: {
+      id: true,
+      slug: true,
+      name: true,
+      description: true,
+      minutes: true,
+      firstVisit: true,
+    },
   });
 }
 
@@ -52,201 +63,208 @@ export async function bookablePractitioners() {
   });
 }
 
-async function workingWindows(practitionerId: string, isoDate: string): Promise<WorkingWindow[]> {
-  const weekday = dayStart(isoDate).getUTCDay();
-  const rules = await prisma.availabilityRule.findMany({
-    where: { practitionerId, weekday },
+export async function workingWindows(
+  practitionerId: string,
+  isoDate: string,
+): Promise<WorkingWindow[]> {
+  return prisma.practitionerAvailability.findMany({
+    where: { practitionerId, weekday: clinicWeekday(isoDate) },
     orderBy: { startMinute: 'asc' },
     select: { startMinute: true, endMinute: true },
   });
-  return rules;
+}
+
+/// The two columns every capacity question needs from a visit type, and the shape the slot
+/// engine wants them in.
+export const activePhaseSelect = {
+  practitionerLeadMinutes: true,
+  practitionerCloseMinutes: true,
+} satisfies Prisma.AppointmentTypeSelect;
+
+export function activePhases(type: {
+  practitionerLeadMinutes: number | null;
+  practitionerCloseMinutes: number | null;
+}): ActivePhases {
+  return {
+    leadMinutes: type.practitionerLeadMinutes,
+    closeMinutes: type.practitionerCloseMinutes,
+  };
 }
 
 /// Appointments are the only thing that makes a room or a practitioner busy, and only their
-/// times are read here — never the patient they belong to.
-async function busyOn(isoDate: string): Promise<Busy[]> {
-  const from = dayStart(isoDate);
-  const to = addMinutes(from, 24 * 60);
-  const appointments = await prisma.appointment.findMany({
-    where: { status: { in: OCCUPYING_STATUSES }, startsAt: { gte: from, lt: to } },
-    select: { startsAt: true, endsAt: true, roomId: true, practitionerId: true },
-  });
-  return appointments;
+/// times are read here — never the patient they belong to. That is deliberate: the availability
+/// path is reachable by a stranger on the public form.
+export async function busyOn(isoDate: string): Promise<Busy[]> {
+  /// The visit type is joined for its active phases alone — how much of each booked visit
+  /// needs the practitioner — which is scheduling arithmetic, not anything about the patient.
+  return prisma.appointment.findMany({
+    where: {
+      status: { in: OCCUPYING_STATUSES },
+      startsAt: { lt: clinicDayEnd(isoDate) },
+      endsAt: { gt: clinicDayStart(isoDate) },
+    },
+    select: {
+      id: true,
+      startsAt: true,
+      endsAt: true,
+      roomId: true,
+      practitionerId: true,
+      appointmentType: { select: activePhaseSelect },
+    },
+  }).then((rows) =>
+    rows.map(({ id, appointmentType, ...rest }) => ({
+      ...rest,
+      appointmentId: id,
+      phases: activePhases(appointmentType),
+    })),
+  );
 }
 
-async function closuresOn(practitionerId: string, isoDate: string) {
-  const from = dayStart(isoDate);
-  const to = addMinutes(from, 24 * 60);
-  const away = await prisma.timeOff.findMany({
+export async function closuresOn(practitionerId: string, isoDate: string) {
+  return prisma.clinicClosure.findMany({
     where: {
       OR: [{ practitionerId }, { practitionerId: null }],
-      startsAt: { lt: to },
-      endsAt: { gt: from },
+      startsAt: { lt: clinicDayEnd(isoDate) },
+      endsAt: { gt: clinicDayStart(isoDate) },
     },
     select: { startsAt: true, endsAt: true },
   });
-  return away;
 }
 
-type SlotQuery = {
-  practitionerId: string;
-  serviceId: string;
-  isoDate: string;
+export type SlotQuery = {
+  /// Null means "any practitioner", which is what most patients actually want.
+  practitionerId: string | null;
+  appointmentTypeId: string;
+  /// `YYYY-MM-DD` in the clinic's timezone.
+  date: string;
   minNoticeMinutes?: number;
+  /// The appointment being moved, so its own time does not block its own reschedule.
+  ignoreAppointmentId?: string;
+  now?: Date;
 };
 
-async function slotContext({ practitionerId, serviceId, isoDate }: SlotQuery) {
-  const [service, rooms, windows, busy, closures] = await Promise.all([
-    prisma.service.findFirst({ where: { id: serviceId, active: true }, select: { minutes: true } }),
+/// A time on offer. The room is chosen here and carried through to the write, but only staff
+/// screens ever render it: patients are asked when, never where.
+export type OfferedSlot = Slot & { practitionerId: string };
+
+export async function getAvailableSlots(query: SlotQuery): Promise<OfferedSlot[]> {
+  if (!isIsoDate(query.date)) return [];
+
+  const settings = await schedulingSettings();
+  const now = query.now ?? new Date();
+  if (!withinHorizon(query.date, settings, now)) return [];
+
+  const [appointmentType, rooms, busy] = await Promise.all([
+    prisma.appointmentType.findFirst({
+      where: { id: query.appointmentTypeId, active: true },
+      select: { id: true, minutes: true, ...activePhaseSelect },
+    }),
     activeRooms(),
-    workingWindows(practitionerId, isoDate),
-    busyOn(isoDate),
-    closuresOn(practitionerId, isoDate),
+    busyOn(query.date),
   ]);
-  return { service, rooms, windows, busy, closures };
-}
+  if (!appointmentType) return [];
 
-/// The open times for one practitioner, one service, one day. Returns times only: the caller
-/// renders them to a patient who has no business knowing who else is booked.
-export async function openSlots(query: SlotQuery): Promise<Slot[]> {
-  const { service, rooms, windows, busy, closures } = await slotContext(query);
-  if (!service || windows.length === 0) return [];
+  const practitionerIds = query.practitionerId
+    ? [query.practitionerId]
+    : (await bookablePractitioners()).map((practitioner) => practitioner.id);
 
-  return bookableSlots({
-    isoDate: query.isoDate,
-    minutes: service.minutes,
-    windows,
-    practitionerId: query.practitionerId,
-    rooms,
-    busy,
-    closures,
-    now: new Date(),
-    minNoticeMinutes: query.minNoticeMinutes ?? 0,
-  });
-}
-
-export type BookingRequest = {
-  patientId: string;
-  practitionerId: string;
-  serviceId: string;
-  startsAt: Date;
-  source: BookingSource;
-  createdById?: string | null;
-  status?: AppointmentStatus;
-  minNoticeMinutes?: number;
-  /// The appointment being moved, so its own time does not block the move.
-  replacingId?: string;
-};
-
-export type BookingResult =
-  | { ok: true; appointmentId: string; startsAt: Date; endsAt: Date; roomId: string }
-  | { ok: false; reason: string };
-
-/// Books one appointment, re-checking the slot inside the transaction that writes it. Two
-/// people clicking the same 3pm is normal — a browser is looking at a snapshot — so the
-/// answer cannot come from the list the browser rendered. The advisory lock serialises
-/// bookings for the day being written, which is cheap and keeps overlap checks honest
-/// without relying on the caller to be first.
-export async function bookAppointment(request: BookingRequest): Promise<BookingResult> {
-  const isoDate = request.startsAt.toISOString().slice(0, 10);
-
-  const service = await prisma.service.findFirst({
-    where: { id: request.serviceId, active: true },
-    select: { id: true, minutes: true },
-  });
-  if (!service) return { ok: false, reason: 'That visit type is no longer offered.' };
-
-  const endsAt = addMinutes(request.startsAt, service.minutes);
-
-  const result = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`booking:${isoDate}`}))`;
-
-    const [rooms, windows, closures, busyRows] = await Promise.all([
-      tx.room.findMany({ where: { active: true }, orderBy: { name: 'asc' }, select: { id: true, name: true } }),
-      tx.availabilityRule.findMany({
-        where: { practitionerId: request.practitionerId, weekday: dayStart(isoDate).getUTCDay() },
-        select: { startMinute: true, endMinute: true },
-      }),
-      tx.timeOff.findMany({
-        where: {
-          OR: [{ practitionerId: request.practitionerId }, { practitionerId: null }],
-          startsAt: { lt: endsAt },
-          endsAt: { gt: request.startsAt },
-        },
-        select: { startsAt: true, endsAt: true },
-      }),
-      tx.appointment.findMany({
-        where: {
-          status: { in: OCCUPYING_STATUSES },
-          startsAt: { lt: endsAt },
-          endsAt: { gt: request.startsAt },
-          ...(request.replacingId ? { id: { not: request.replacingId } } : {}),
-        },
-        select: { startsAt: true, endsAt: true, roomId: true, practitionerId: true },
-      }),
-    ]);
-
-    if (windows.length === 0) {
-      return { ok: false as const, reason: 'That practitioner does not work then.' };
-    }
-
-    const check = slotIsOpen(
-      { startsAt: request.startsAt, endsAt },
-      {
+  const perPractitioner = await Promise.all(
+    practitionerIds.map(async (practitionerId) => {
+      const [windows, closures] = await Promise.all([
+        workingWindows(practitionerId, query.date),
+        closuresOn(practitionerId, query.date),
+      ]);
+      if (windows.length === 0) return [];
+      return bookableSlots({
+        isoDate: query.date,
+        minutes: appointmentType.minutes,
+        phases: activePhases(appointmentType),
         windows,
-        practitionerId: request.practitionerId,
+        practitionerId,
         rooms,
-        busy: busyRows,
+        busy,
         closures,
-        now: new Date(),
-        minNoticeMinutes: request.minNoticeMinutes ?? 0,
-      },
-    );
-    if (!check.ok) return { ok: false as const, reason: check.reason };
+        now,
+        minNoticeMinutes: query.minNoticeMinutes ?? 0,
+        policy: capacityPolicy(settings),
+        ignoreAppointmentId: query.ignoreAppointmentId,
+      }).map((slot) => ({ ...slot, practitionerId }));
+    }),
+  );
 
-    const data: Prisma.AppointmentUncheckedCreateInput = {
-      patientId: request.patientId,
-      practitionerId: request.practitionerId,
-      serviceId: service.id,
-      roomId: check.roomId,
-      startsAt: request.startsAt,
-      endsAt,
-      status: request.status ?? 'BOOKED',
-      source: request.source,
-      createdById: request.createdById ?? null,
-    };
+  return perPractitioner.flat().sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+}
 
-    if (request.replacingId) {
-      await tx.appointment.update({
-        where: { id: request.replacingId },
-        data: { status: 'CANCELLED', cancelledAt: new Date() },
-      });
-    }
-
-    const created = await tx.appointment.create({ data, select: { id: true, startsAt: true, endsAt: true } });
-    return {
-      ok: true as const,
-      appointmentId: created.id,
-      startsAt: created.startsAt,
-      endsAt: created.endsAt,
-      roomId: check.roomId,
-    };
+/// One entry per distinct start time, with a practitioner attached. This is what a patient
+/// picker renders: three practitioners free at 3pm is one 3pm on the screen, and which of them
+/// the patient gets is not information about anyone else's appointment.
+export function distinctStarts(slots: OfferedSlot[]): OfferedSlot[] {
+  const seen = new Set<number>();
+  return slots.filter((slot) => {
+    const key = slot.startsAt.getTime();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
+}
 
-  /// Outside the transaction on purpose: which door a booking came through is worth measuring,
-  /// but never at the price of failing the booking.
-  if (result.ok) {
-    await recordEvent({
-      type: 'APPOINTMENT_BOOKED',
-      patientId: request.patientId,
-      userId: request.createdById,
-      appointmentId: result.appointmentId,
-      serviceId: service.id,
-      roomId: result.roomId,
-      source: request.source,
-      minutes: service.minutes,
-    });
-  }
+export function withinHorizon(isoDate: string, settings: SchedulingSettings, now: Date): boolean {
+  const today = clinicIsoDate(now);
+  return isoDate >= today && isoDate <= addDays(today, settings.bookingHorizonDays);
+}
 
-  return result;
+/// The room-minutes the practitioners were open for on a day, which is the denominator every
+/// utilisation number needs and the only honest way to say a day was "half full".
+export async function openMinutesOn(isoDate: string): Promise<number> {
+  const rules = await prisma.practitionerAvailability.findMany({
+    where: { weekday: clinicWeekday(isoDate) },
+    select: { startMinute: true, endMinute: true },
+  });
+  return rules.reduce((total, rule) => total + Math.max(0, rule.endMinute - rule.startMinute), 0);
+}
+
+export type DayAppointment = Prisma.AppointmentGetPayload<{
+  select: typeof dayAppointmentSelect;
+}>;
+
+/// What the day views read. Every relation the screen needs is joined in this one query —
+/// there is no per-row lookup anywhere in the schedule pages — and note content is not among
+/// them, so the front desk's busiest screen cannot leak a chart.
+export const dayAppointmentSelect = {
+  id: true,
+  startsAt: true,
+  endsAt: true,
+  status: true,
+  source: true,
+  roomId: true,
+  practitionerId: true,
+  patientId: true,
+  checkedInAt: true,
+  patient: {
+    select: {
+      id: true,
+      firstName: true,
+      lastName: true,
+      phone: true,
+      selfRegisteredAt: true,
+    },
+  },
+  practitioner: { select: { id: true, name: true } },
+  appointmentType: { select: { id: true, name: true, minutes: true, firstVisit: true } },
+  room: { select: { id: true, name: true } },
+} satisfies Prisma.AppointmentSelect;
+
+export async function appointmentsOn(
+  isoDate: string,
+  where: Prisma.AppointmentWhereInput = {},
+): Promise<DayAppointment[]> {
+  return prisma.appointment.findMany({
+    where: {
+      ...where,
+      startsAt: { lt: clinicDayEnd(isoDate) },
+      endsAt: { gt: clinicDayStart(isoDate) },
+    },
+    orderBy: { startsAt: 'asc' },
+    select: dayAppointmentSelect,
+  });
 }

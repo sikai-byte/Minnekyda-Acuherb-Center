@@ -5,7 +5,10 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { recordAudit } from '@/lib/audit';
-import { SELF_BOOKING_NOTICE_MINUTES, bookAppointment, openSlots } from '@/lib/scheduling/availability';
+import { distinctStarts, getAvailableSlots } from '@/lib/scheduling/availability';
+import { bookAppointment } from '@/lib/scheduling/booking';
+import { schedulingSettings } from '@/lib/scheduling/policy';
+import { clinicIsoDate } from '@/lib/scheduling/time';
 
 /// The only unauthenticated writes in the product: a first-time patient asking for a
 /// consultation on the public website.
@@ -17,8 +20,10 @@ import { SELF_BOOKING_NOTICE_MINUTES, bookAppointment, openSlots } from '@/lib/s
 /// symptom, reason or comment field anywhere in this flow, so nothing a stranger types on the
 /// open internet is health information.
 ///
-/// The request lands as an `Appointment` with status `REQUESTED`. It holds the room so the
-/// slot cannot be sold twice, and the front desk confirms it.
+/// The request lands as a booked `Appointment`, confirmed as it is made, because a website
+/// visitor who picked a time has booked one. `SchedulingPolicy.publicRequestsAutoConfirm`
+/// turns that off, and requests then land as `REQUESTED` for the front desk to confirm; either
+/// way the slot is held, so it cannot be sold twice.
 
 const PUBLIC_REQUESTS_PER_HOUR = 5;
 const PUBLIC_REQUESTS_PER_DAY = 20;
@@ -29,14 +34,20 @@ const requestSchema = z.object({
   dateOfBirth: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, 'Enter your date of birth.'),
   phone: z.string().trim().min(7, 'Enter a phone number we can reach you on.').max(40),
   email: z.string().trim().email('Enter an email address for your confirmation.').max(120),
-  practitionerId: z.string().min(1),
-  serviceId: z.string().min(1),
+  practitionerId: z.string(),
+  appointmentTypeId: z.string().min(1),
   startsAt: z.string().datetime(),
   /// Bots fill every field they find; people never see this one.
   decoy: z.string().max(0).optional().or(z.literal('')),
 });
 
-export type PublicBookingState = { error?: string; reference?: string; when?: string };
+export type PublicBookingState = {
+  error?: string;
+  reference?: string;
+  when?: string;
+  /// False when the clinic confirms website bookings by hand, so the screen can say so.
+  confirmed?: boolean;
+};
 
 function sourceIp(): string | null {
   return headers().get('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
@@ -56,24 +67,25 @@ async function throttled(ip: string | null): Promise<boolean> {
 
 export async function publicOpenSlots(
   practitionerId: string,
-  serviceId: string,
-  isoDate: string,
+  appointmentTypeId: string,
+  date: string,
 ): Promise<string[]> {
   /// Deliberately unauthenticated, and it discloses nothing but free times: no patient, no
   /// room, and no hint about who occupies the times that are missing.
-  const service = await prisma.service.findFirst({
-    where: { id: serviceId, active: true, publiclyBookable: true, firstVisit: true },
+  const appointmentType = await prisma.appointmentType.findFirst({
+    where: { id: appointmentTypeId, active: true, publiclyBookable: true, firstVisit: true },
     select: { id: true },
   });
-  if (!service) return [];
+  if (!appointmentType) return [];
 
-  const slots = await openSlots({
-    practitionerId,
-    serviceId: service.id,
-    isoDate,
-    minNoticeMinutes: SELF_BOOKING_NOTICE_MINUTES,
+  const settings = await schedulingSettings();
+  const slots = await getAvailableSlots({
+    practitionerId: practitionerId || null,
+    appointmentTypeId: appointmentType.id,
+    date,
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
   });
-  return slots.map((slot) => slot.startsAt.toISOString());
+  return distinctStarts(slots).map((slot) => slot.startsAt.toISOString());
 }
 
 export async function requestPublicBooking(formData: FormData): Promise<PublicBookingState> {
@@ -84,7 +96,7 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
     phone: formData.get('phone') ?? '',
     email: formData.get('email') ?? '',
     practitionerId: formData.get('practitionerId') ?? '',
-    serviceId: formData.get('serviceId') ?? '',
+    appointmentTypeId: formData.get('appointmentTypeId') ?? '',
     startsAt: formData.get('startsAt') ?? '',
     decoy: formData.get('decoy') ?? '',
   });
@@ -98,13 +110,34 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
   }
   await prisma.bookingAttempt.create({ data: { ip } });
 
-  /// Only a first-visit service may be booked by someone with no chart; anything else is a
+  /// Only a first-visit type may be booked by someone with no chart; anything else is a
   /// returning patient, who books in the portal or by phone.
-  const service = await prisma.service.findFirst({
-    where: { id: parsed.data.serviceId, active: true, publiclyBookable: true, firstVisit: true },
+  const appointmentType = await prisma.appointmentType.findFirst({
+    where: {
+      id: parsed.data.appointmentTypeId,
+      active: true,
+      publiclyBookable: true,
+      firstVisit: true,
+    },
     select: { id: true },
   });
-  if (!service) return { error: 'Please call the clinic to book that visit.' };
+  if (!appointmentType) return { error: 'Please call the clinic to book that visit.' };
+
+  const settings = await schedulingSettings();
+  const startsAt = new Date(parsed.data.startsAt);
+
+  /// Whoever is free takes the visit when the caller did not choose. Resolved server-side, so
+  /// the public form never has to be told which practitioners exist to be able to book.
+  const offered = await getAvailableSlots({
+    practitionerId: parsed.data.practitionerId || null,
+    appointmentTypeId: appointmentType.id,
+    date: clinicIsoDate(startsAt),
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
+  });
+  const practitionerId = offered.find(
+    (slot) => slot.startsAt.getTime() === startsAt.getTime(),
+  )?.practitionerId;
+  if (!practitionerId) return { error: 'That time has just gone. Please pick another.' };
 
   const patient = await prisma.patient.create({
     data: {
@@ -120,12 +153,12 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
 
   const result = await bookAppointment({
     patientId: patient.id,
-    practitionerId: parsed.data.practitionerId,
-    serviceId: service.id,
-    startsAt: new Date(parsed.data.startsAt),
-    source: 'PUBLIC',
-    status: 'REQUESTED',
-    minNoticeMinutes: SELF_BOOKING_NOTICE_MINUTES,
+    practitionerId,
+    appointmentTypeId: appointmentType.id,
+    startsAt,
+    actor: { id: null, role: null, source: 'PUBLIC' },
+    status: settings.publicRequestsAutoConfirm ? 'SCHEDULED' : 'REQUESTED',
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
   });
 
   if (!result.ok) {
@@ -154,5 +187,6 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
   return {
     reference: result.appointmentId.slice(-6).toUpperCase(),
     when: result.startsAt.toISOString(),
+    confirmed: settings.publicRequestsAutoConfirm,
   };
 }

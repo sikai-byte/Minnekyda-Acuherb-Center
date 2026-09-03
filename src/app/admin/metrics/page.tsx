@@ -2,7 +2,7 @@ import { AppShell } from '@/components/AppShell';
 import { requireRole } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
 import { formatDate } from '@/lib/format';
-import { dayStart } from '@/lib/scheduling/slots';
+import { clinicDayStart } from '@/lib/scheduling/time';
 import { FRONT_DESK_MINUTES_PER_VISIT, PAPER_CHART_MINUTES } from '@/lib/metrics/baselines';
 import { clinicReport, lastDays } from '@/lib/metrics/report';
 import type { Duration } from '@/lib/metrics/clinic';
@@ -65,7 +65,8 @@ export default async function MetricsPage({ searchParams }: { searchParams: { da
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Operations</h1>
           <p className="mt-1 text-sm text-clay-600">
-            {formatDate(dayStart(report.window.fromIso))} – {formatDate(dayStart(report.window.toIso))}
+            {formatDate(clinicDayStart(report.window.fromIso))} –{' '}
+            {formatDate(clinicDayStart(report.window.toIso))}
           </p>
         </div>
         <nav className="flex gap-1 text-sm">
