@@ -537,17 +537,26 @@ describe('website booking', () => {
     return form;
   }
 
-  async function bookedFrom(when: Date): Promise<{ status: string; source: string }> {
+  /// `told` is what the confirmation screen will say, so a row that is only requested cannot be
+  /// reported to the visitor as confirmed.
+  async function bookedFrom(
+    when: Date,
+  ): Promise<{ status: string; source: string; told: boolean | undefined }> {
     const result = await requestPublicBooking(publicForm(when));
     if (!result.reference) throw new Error(result.error ?? 'no reference');
-    return prisma.appointment.findFirstOrThrow({
+    const row = await prisma.appointment.findFirstOrThrow({
       where: { startsAt: when, patient: { lastName: TAG } },
       select: { status: true, source: true },
     });
+    return { ...row, told: result.confirmed };
   }
 
   it('confirms a website visitor\u2019s first consultation as it is booked', async () => {
-    expect(await bookedFrom(at(NINE, FAR))).toEqual({ status: 'SCHEDULED', source: 'PUBLIC' });
+    expect(await bookedFrom(at(NINE, FAR))).toEqual({
+      status: 'SCHEDULED',
+      source: 'PUBLIC',
+      told: true,
+    });
   });
 
   it('falls back to a request the front desk confirms when the clinic turns that off', async () => {
@@ -559,6 +568,7 @@ describe('website booking', () => {
       expect(await bookedFrom(at(11 * 60, FAR))).toEqual({
         status: 'REQUESTED',
         source: 'PUBLIC',
+        told: false,
       });
     } finally {
       await prisma.schedulingPolicy.update({

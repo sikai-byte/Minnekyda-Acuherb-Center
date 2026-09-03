@@ -41,7 +41,13 @@ const requestSchema = z.object({
   decoy: z.string().max(0).optional().or(z.literal('')),
 });
 
-export type PublicBookingState = { error?: string; reference?: string; when?: string };
+export type PublicBookingState = {
+  error?: string;
+  reference?: string;
+  when?: string;
+  /// False when the clinic confirms website bookings by hand, so the screen can say so.
+  confirmed?: boolean;
+};
 
 function sourceIp(): string | null {
   return headers().get('x-forwarded-for')?.split(',')[0]?.trim() ?? null;
@@ -181,5 +187,6 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
   return {
     reference: result.appointmentId.slice(-6).toUpperCase(),
     when: result.startsAt.toISOString(),
+    confirmed: settings.publicRequestsAutoConfirm,
   };
 }
