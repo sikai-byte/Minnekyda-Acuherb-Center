@@ -1,5 +1,6 @@
 import type { AppointmentStatus, BookingSource, Prisma } from '@prisma/client';
 import { prisma } from '@/lib/db';
+import { recordEvent } from '@/lib/telemetry';
 import {
   addMinutes,
   bookableSlots,
@@ -138,7 +139,7 @@ export type BookingRequest = {
 };
 
 export type BookingResult =
-  | { ok: true; appointmentId: string; startsAt: Date; endsAt: Date }
+  | { ok: true; appointmentId: string; startsAt: Date; endsAt: Date; roomId: string }
   | { ok: false; reason: string };
 
 /// Books one appointment, re-checking the slot inside the transaction that writes it. Two
@@ -157,7 +158,7 @@ export async function bookAppointment(request: BookingRequest): Promise<BookingR
 
   const endsAt = addMinutes(request.startsAt, service.minutes);
 
-  return prisma.$transaction(async (tx) => {
+  const result = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`booking:${isoDate}`}))`;
 
     const [rooms, windows, closures, busyRows] = await Promise.all([
@@ -223,6 +224,29 @@ export async function bookAppointment(request: BookingRequest): Promise<BookingR
     }
 
     const created = await tx.appointment.create({ data, select: { id: true, startsAt: true, endsAt: true } });
-    return { ok: true as const, appointmentId: created.id, startsAt: created.startsAt, endsAt: created.endsAt };
+    return {
+      ok: true as const,
+      appointmentId: created.id,
+      startsAt: created.startsAt,
+      endsAt: created.endsAt,
+      roomId: check.roomId,
+    };
   });
+
+  /// Outside the transaction on purpose: which door a booking came through is worth measuring,
+  /// but never at the price of failing the booking.
+  if (result.ok) {
+    await recordEvent({
+      type: 'APPOINTMENT_BOOKED',
+      patientId: request.patientId,
+      userId: request.createdById,
+      appointmentId: result.appointmentId,
+      serviceId: service.id,
+      roomId: result.roomId,
+      source: request.source,
+      minutes: service.minutes,
+    });
+  }
+
+  return result;
 }

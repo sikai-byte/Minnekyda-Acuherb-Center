@@ -2,10 +2,11 @@
 
 import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
-import type { AppointmentStatus } from '@prisma/client';
+import type { AppointmentStatus, ClinicEventType } from '@prisma/client';
 import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { recordEvent } from '@/lib/telemetry';
 import { bookAppointment, openSlots } from '@/lib/scheduling/availability';
 
 /// The front desk's side of the calendar. Every one of these names a patient, so every one
@@ -111,6 +112,13 @@ const STAFF_TRANSITIONS: Record<string, AppointmentStatus> = {
   'no-show': 'NO_SHOW',
 };
 
+const STATUS_EVENTS: Partial<Record<AppointmentStatus, ClinicEventType>> = {
+  CHECKED_IN: 'APPOINTMENT_CHECKED_IN',
+  COMPLETED: 'APPOINTMENT_COMPLETED',
+  CANCELLED: 'APPOINTMENT_CANCELLED',
+  NO_SHOW: 'APPOINTMENT_NO_SHOW',
+};
+
 /// One entry point for the day's status taps, so each one audits identically. Cancelling
 /// and marking a no-show release the room; the appointment row itself is kept either way,
 /// because attendance history is part of what the reporting has to explain.
@@ -124,7 +132,7 @@ export async function setAppointmentStatus(
 
   const existing = await prisma.appointment.findUnique({
     where: { id: appointmentId },
-    select: { patientId: true, status: true },
+    select: { patientId: true, status: true, serviceId: true, roomId: true, source: true },
   });
   if (!existing) return { error: 'That appointment no longer exists.' };
 
@@ -145,6 +153,19 @@ export async function setAppointmentStatus(
     patientId: existing.patientId,
     detail: { from: existing.status, to: status },
   });
+
+  const event = STATUS_EVENTS[status];
+  if (event) {
+    await recordEvent({
+      type: event,
+      patientId: existing.patientId,
+      userId: user.id,
+      appointmentId,
+      serviceId: existing.serviceId,
+      roomId: existing.roomId,
+      source: existing.source,
+    });
+  }
 
   revalidatePath('/schedule');
   revalidatePath(`/patients/${existing.patientId}`);

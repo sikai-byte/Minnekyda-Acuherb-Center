@@ -32,6 +32,9 @@ export function Nav({ user }: { user: SessionUser }) {
               <Link href="/admin/staff" className="btn-ghost">
                 Staff
               </Link>
+              <Link href="/admin/metrics" className="btn-ghost">
+                Operations
+              </Link>
               <Link href="/admin/audit" className="btn-ghost">
                 Audit log
               </Link>

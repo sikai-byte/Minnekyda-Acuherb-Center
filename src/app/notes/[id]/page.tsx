@@ -6,6 +6,7 @@ import { AmendButton } from '@/components/AmendButton';
 import { prisma } from '@/lib/db';
 import { requireRole, CLINICAL_ROLES } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { recordEvent } from '@/lib/telemetry';
 import { updateNote } from '@/lib/actions/notes';
 import {
   NOTE_FIELD_LABELS,
@@ -33,6 +34,17 @@ export default async function NotePage({ params }: { params: { id: string } }) {
     entityId: note.id,
     patientId: note.patientId,
   });
+
+  /// Re-opening a draft restarts the timing interval, so what gets measured is the sitting the
+  /// note was signed in rather than the days it may have sat unfinished.
+  if (note.status === 'DRAFT') {
+    await recordEvent({
+      type: 'NOTE_STARTED',
+      patientId: note.patientId,
+      userId: user.id,
+      noteId: note.id,
+    });
+  }
 
   const header = (
     <div className="mb-6">

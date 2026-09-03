@@ -4,6 +4,7 @@ import { AppShell } from '@/components/AppShell';
 import { NoteEditor, type NoteTemplateOption } from '@/components/NoteEditor';
 import { prisma } from '@/lib/db';
 import { requireRole, CLINICAL_ROLES } from '@/lib/auth';
+import { recordEvent } from '@/lib/telemetry';
 import { createNote } from '@/lib/actions/notes';
 import { templatePresets } from '@/lib/notes/structure';
 import { formatDateInput, patientName } from '@/lib/format';
@@ -11,13 +12,21 @@ import { formatDateInput, patientName } from '@/lib/format';
 export const dynamic = 'force-dynamic';
 
 export default async function NewNotePage({ params }: { params: { id: string } }) {
-  await requireRole(CLINICAL_ROLES);
+  const user = await requireRole(CLINICAL_ROLES);
 
   const [patient, templates] = await Promise.all([
     prisma.patient.findUnique({ where: { id: params.id } }),
     prisma.noteTemplate.findMany({ where: { active: true }, orderBy: { name: 'asc' } }),
   ]);
   if (!patient) notFound();
+
+  /// The clock on "how long does a note take" starts here, because there is no note row until
+  /// the practitioner saves one.
+  await recordEvent({
+    type: 'NOTE_STARTED',
+    patientId: patient.id,
+    userId: user.id,
+  });
 
   const templateOptions: NoteTemplateOption[] = templates.map((template) => ({
     id: template.id,
