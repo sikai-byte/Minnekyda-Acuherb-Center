@@ -18,6 +18,7 @@ entered anywhere hosted until the hosting BAA is signed (see [Before real patien
 | Patient portal (own paperwork and visit dates only) | **Built** | `src/app/portal`, `src/lib/portalScope.ts` |
 | Scheduling: capacity domain, staff schedule, portal booking, public website booking | **Built** | `src/app/schedule`, `src/app/book`, `src/lib/scheduling`, `src/lib/actions/appointments.ts` |
 | Operational telemetry and the operations report | **Built** | `src/lib/telemetry.ts`, `src/lib/metrics`, `src/app/admin/metrics` |
+| Transactional email: confirmations, reminders, cancellations, invitations | **Built** | `src/lib/email`, `scripts/send-reminders.ts` |
 | Payments and Stripe reconciliation | **Not built** | — |
 | Reporting (visits, weekly capacity) | **Built** | `src/app/admin/metrics`, `src/app/schedule/capacity`, `src/lib/scheduling/capacity.ts` |
 | Insurance billing | **Out of scope** for now, planned later | — |
@@ -30,7 +31,8 @@ Deliberate product decisions, so nobody re-litigates them by accident:
   select no note text and a test fails the build if portal code so much as references a note text
   column. There is no note-release feature and none is planned.
 - **No clinical detail ever reaches Stripe or any email/SMS provider.** Charges read like
-  "Office visit — 60 min". Stripe will not sign a BAA, so this is a hard design rule.
+  "Office visit — 60 min", and email says "your visit" and never which visit type. Stripe will not
+  sign a BAA, so this is a hard design rule.
 - **Hidden navigation is not access control.** Every route and every server action is guarded
   server-side, and `src/lib/authz.test.ts` fails the build when a new one appears unguarded.
 - **The calendar carries no health information.** No appointment column, booking form or
@@ -115,6 +117,9 @@ click-accept BAA.
   agent. Append-only; the app never prunes it.
 - **`LoginAttempt`** — every authentication attempt, used for throttling and as login-monitoring
   evidence.
+- **`EmailMessage`** — one row per delivery attempt: kind, recipient, `SENT` / `SKIPPED` / `FAILED`,
+  the provider's id and the ids it relates to. No subject and no body, so the table cannot become a
+  copy of the clinic's outbox. See [Email](#email).
 
 Migrations are committed under `prisma/migrations` and production runs `prisma migrate deploy`.
 `npm run db:drift` fails if the schema and migrations disagree.
@@ -262,6 +267,47 @@ the time and the clinic's name only.
 3. What the front desk should see when a website booking lands, now that it is confirmed rather
    than queued for review.
 
+## Email
+
+`src/lib/email` is the only part of the platform that sends anything to an address the clinic does
+not control, so it is deliberately small and layered:
+
+| File | Job |
+| --- | --- |
+| `config.ts` | reads the environment; returns `null` when mail is not configured |
+| `templates.ts` | pure functions from a few logistics fields to a subject and a plain-text body |
+| `send.ts` | the single call to Resend's REST API, and the `EmailMessage` record of every attempt |
+| `notifications.ts` | loads the handful of appointment columns a template needs and sends |
+| `reminders.ts` | the daily reminder sweep, run by `npm run reminders` |
+
+Rules the tests enforce, rather than the comments merely asking for:
+
+- **Logistics only.** Date, time, practitioner, clinic name and phone, and a portal link. Never the
+  visit type — the clinic can rename a type to anything, and a type named after a condition would
+  turn every confirmation into a disclosure — never the room, never an appointment or patient id in
+  a URL, and never anything from a note or an intake answer.
+- **Sending cannot break the clinic.** A provider outage is caught, recorded as `FAILED`, and
+  swallowed: a booking that has been committed and audited is never reported as failed because mail
+  was down. Notifications run after the domain transaction, never inside it.
+- **Nothing patient-shaped is logged.** Log lines carry the message kind and, on failure, the
+  provider's status code — not the recipient, the subject, the body, or the provider's own reply.
+- **`EmailMessage` is a delivery record, not a mailbox copy.** Kind, recipient, status, provider id,
+  error, and the ids it relates to. No subject, no body.
+- **Reminders are idempotent.** `Appointment.reminderSentAt` is stamped as each goes out, so a cron
+  that fires twice does not email a patient twice. A genuine send failure is left unstamped so the
+  next run retries it.
+
+With `RESEND_API_KEY` or `EMAIL_FROM` unset — local development, and any synthetic environment —
+the app runs normally and every attempt is recorded as `SKIPPED`. Nothing is sent, so a synthetic
+chart with a plausible-looking address cannot mail a real person. In a deployment, `EMAIL_FROM`
+must be on a domain verified in Resend (SPF + DKIM in the clinic's DNS) and `APP_BASE_URL` must be
+the public origin, or the links in the email point at localhost.
+
+Staff and patient invitations carry the one-time password, and it is still shown on screen: an
+admin standing next to a new hire, or an email that never arrives, must not lock anybody out. The
+password is single-use and must be changed at the first sign-in. Replacing it with a signed
+invitation link is the better end state and is not built.
+
 ## Local development
 
 ```bash
@@ -292,6 +338,7 @@ app up and exercise it end to end.
 | `npm run db:migrate` | create a migration |
 | `npm run db:drift` | fail if committed migrations no longer match `schema.prisma` |
 | `npm run db:seed` | staff users, intake form v1, note templates, rooms, services, working hours |
+| `npm run reminders` | send reminders for visits coming up (a daily cron in a deployment) |
 | `npm run db:push` | sync schema without a migration (development only) |
 
 ## Synthetic pilot deployment (Railway)
@@ -328,8 +375,12 @@ Launch gates, not nice-to-haves:
    paper packet.
 6. Access review, PHI-in-logs re-audit, and an independent penetration test.
 7. Load / soak / cold-start testing against Cloud Run + Cloud SQL connection limits.
-8. Decide who sends booking confirmations (a BAA'd email provider, or the phone), and confirm the
-   scheduling follow-ups above with clinic staff before the first real booking.
+8. Confirm the mail provider is acceptable for real patients. Emails carry logistics only, but a
+   provider still learns that a named person has an appointment at a clinic, which is itself
+   protected. Either get a BAA from Resend on a plan that offers one, or move to a provider that
+   does, before the first real booking. Also confirm the scheduling follow-ups above with staff.
+9. Schedule `npm run reminders` (once a day) wherever the app is deployed; nothing runs it
+   automatically today.
 
 ## Build history
 
@@ -338,4 +389,5 @@ patient portal (#3) → operational hardening: staff management, idle timeout, p
 encrypted TOTP secrets (#4) → the scope README (#5) → scheduling: staff calendar, portal booking,
 public website booking (#6) → telemetry and the operations report (#7) → the scheduling capacity
 domain: clinic timezone, appointment types, capacity policy, appointment history, weekly capacity
-report (#8). Payments are next.
+report (#8) → the clinic's own logo (#9) → the two synthetic stress-test findings (#10) →
+transactional email over Resend (#11). Payments are next.

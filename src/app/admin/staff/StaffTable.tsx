@@ -105,6 +105,9 @@ export function StaffTable({ staff, currentUserId }: { staff: StaffRow[]; curren
                 <p className="mt-1 font-mono text-lg">{result.temporaryPassword}</p>
                 <p className="mt-1 text-xs text-clay-600">
                   It is not shown again and must be changed at their next sign-in.
+                  {result.emailed
+                    ? ' We have also emailed it to them.'
+                    : ' Email is not going out, so pass it on yourself.'}
                 </p>
               </div>
             ) : null}
