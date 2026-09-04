@@ -11,8 +11,10 @@ import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
 import {
   portalBook,
   portalCancel,
+  portalOpenDays,
   portalOpenSlots,
   portalReschedule,
+  portalRescheduleOpenDays,
   portalRescheduleSlots,
 } from '@/lib/actions/portalBooking';
 
@@ -48,6 +50,7 @@ export function PortalBooking({
       appointmentTypes={appointmentTypes}
       practitioners={practitioners}
       loadSlots={portalOpenSlots}
+      loadOpenDays={portalOpenDays}
       allowAnyPractitioner
       submit={portalBook}
       submitLabel="Book this time"
@@ -101,6 +104,9 @@ export function UpcomingAppointments({
                   practitioners={[appointment.practitioner]}
                   loadSlots={(_practitionerId, _appointmentTypeId, date) =>
                     portalRescheduleSlots(appointment.id, date)
+                  }
+                  loadOpenDays={(_practitionerId, _appointmentTypeId, from, to) =>
+                    portalRescheduleOpenDays(appointment.id, from, to)
                   }
                   submit={portalReschedule}
                   submitLabel="Move to this time"

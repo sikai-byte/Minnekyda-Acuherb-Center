@@ -3,7 +3,11 @@
 import { useState } from 'react';
 import { SlotPicker, type PickerAppointmentType, type PickerPractitioner } from './SlotPicker';
 import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
-import { publicOpenSlots, requestPublicBooking } from '@/lib/actions/publicBooking';
+import {
+  publicOpenDays,
+  publicOpenSlots,
+  requestPublicBooking,
+} from '@/lib/actions/publicBooking';
 
 const WHEN = new Intl.DateTimeFormat('en-US', {
   weekday: 'long',
@@ -56,6 +60,7 @@ export function PublicBooking({
       appointmentTypes={appointmentTypes}
       practitioners={practitioners}
       loadSlots={publicOpenSlots}
+      loadOpenDays={publicOpenDays}
       allowAnyPractitioner
       submit={async (formData) => {
         const result = await requestPublicBooking(formData);

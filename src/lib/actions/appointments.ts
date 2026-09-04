@@ -6,7 +6,7 @@ import { requireRole } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
 import { prisma } from '@/lib/db';
 import { notifyAppointment, notifyRescheduled } from '@/lib/email/notifications';
-import { getAvailableSlots } from '@/lib/scheduling/availability';
+import { getAvailableSlots, getOpenDays } from '@/lib/scheduling/availability';
 import {
   applyLifecycle,
   bookAppointment,
@@ -53,6 +53,21 @@ export async function staffOpenSlots(
     date,
   });
   return slots.map((slot) => slot.startsAt.toISOString());
+}
+
+export async function staffOpenDays(
+  practitionerId: string,
+  appointmentTypeId: string,
+  from: string,
+  to: string,
+): Promise<string[]> {
+  await requireRole([...SCHEDULING_ROLES]);
+  return getOpenDays({
+    practitionerId: practitionerId || null,
+    appointmentTypeId,
+    from,
+    to,
+  });
 }
 
 export async function bookForPatient(formData: FormData): Promise<AppointmentActionState> {

@@ -95,13 +95,17 @@ export function activePhases(type: {
 /// times are read here — never the patient they belong to. That is deliberate: the availability
 /// path is reachable by a stranger on the public form.
 export async function busyOn(isoDate: string): Promise<Busy[]> {
-  /// The visit type is joined for its active phases alone — how much of each booked visit
-  /// needs the practitioner — which is scheduling arithmetic, not anything about the patient.
-  return prisma.appointment.findMany({
+  return busyBetween(clinicDayStart(isoDate), clinicDayEnd(isoDate));
+}
+
+/// The visit type is joined for its active phases alone — how much of each booked visit needs
+/// the practitioner — which is scheduling arithmetic, not anything about the patient.
+async function busyBetween(from: Date, to: Date): Promise<Busy[]> {
+  const rows = await prisma.appointment.findMany({
     where: {
       status: { in: OCCUPYING_STATUSES },
-      startsAt: { lt: clinicDayEnd(isoDate) },
-      endsAt: { gt: clinicDayStart(isoDate) },
+      startsAt: { lt: to },
+      endsAt: { gt: from },
     },
     select: {
       id: true,
@@ -111,13 +115,12 @@ export async function busyOn(isoDate: string): Promise<Busy[]> {
       practitionerId: true,
       appointmentType: { select: activePhaseSelect },
     },
-  }).then((rows) =>
-    rows.map(({ id, appointmentType, ...rest }) => ({
-      ...rest,
-      appointmentId: id,
-      phases: activePhases(appointmentType),
-    })),
-  );
+  });
+  return rows.map(({ id, appointmentType, ...rest }) => ({
+    ...rest,
+    appointmentId: id,
+    phases: activePhases(appointmentType),
+  }));
 }
 
 export async function closuresOn(practitionerId: string, isoDate: string) {
@@ -193,6 +196,108 @@ export async function getAvailableSlots(query: SlotQuery): Promise<OfferedSlot[]
   );
 
   return perPractitioner.flat().sort((a, b) => a.startsAt.getTime() - b.startsAt.getTime());
+}
+
+export type OpenDaysQuery = Omit<SlotQuery, 'date'> & {
+  /// `YYYY-MM-DD` in the clinic's timezone, inclusive at both ends.
+  from: string;
+  to: string;
+};
+
+/// Longest span answered in one call, so a browser cannot ask for a decade of calendar.
+const MAX_OPEN_DAY_SPAN = 62;
+
+/// Which days in a range have at least one bookable time, so a calendar can grey out the days
+/// worth nothing to a patient before they click on them.
+///
+/// The same engine as `getAvailableSlots`, run day by day but reading the range's appointments,
+/// closures and working hours once each: the month view must not become a query per square.
+/// It answers "is anything free", never how much — how full a Tuesday is would be a fact about
+/// other people's appointments.
+export async function getOpenDays(query: OpenDaysQuery): Promise<string[]> {
+  if (!isIsoDate(query.from) || !isIsoDate(query.to) || query.to < query.from) return [];
+
+  const settings = await schedulingSettings();
+  const now = query.now ?? new Date();
+  const today = clinicIsoDate(now);
+  const first = query.from < today ? today : query.from;
+  const horizonEnd = addDays(today, settings.bookingHorizonDays);
+  const last = query.to > horizonEnd ? horizonEnd : query.to;
+  if (last < first) return [];
+
+  const [appointmentType, rooms] = await Promise.all([
+    prisma.appointmentType.findFirst({
+      where: { id: query.appointmentTypeId, active: true },
+      select: { id: true, minutes: true, ...activePhaseSelect },
+    }),
+    activeRooms(),
+  ]);
+  if (!appointmentType) return [];
+
+  const practitionerIds = query.practitionerId
+    ? [query.practitionerId]
+    : (await bookablePractitioners()).map((practitioner) => practitioner.id);
+  if (practitionerIds.length === 0) return [];
+
+  const days: string[] = [];
+  for (let day = first; day <= last && days.length < MAX_OPEN_DAY_SPAN; day = addDays(day, 1)) {
+    days.push(day);
+  }
+
+  const rangeStart = clinicDayStart(days[0]);
+  const rangeEnd = clinicDayEnd(days[days.length - 1]);
+  const [busy, closures, windows] = await Promise.all([
+    busyBetween(rangeStart, rangeEnd),
+    prisma.clinicClosure.findMany({
+      where: {
+        OR: [{ practitionerId: { in: practitionerIds } }, { practitionerId: null }],
+        startsAt: { lt: rangeEnd },
+        endsAt: { gt: rangeStart },
+      },
+      select: { practitionerId: true, startsAt: true, endsAt: true },
+    }),
+    prisma.practitionerAvailability.findMany({
+      where: { practitionerId: { in: practitionerIds } },
+      orderBy: { startMinute: 'asc' },
+      select: { practitionerId: true, weekday: true, startMinute: true, endMinute: true },
+    }),
+  ]);
+
+  const policy = capacityPolicy(settings);
+  return days.filter((isoDate) => {
+    const dayStart = clinicDayStart(isoDate);
+    const dayEnd = clinicDayEnd(isoDate);
+    const dayBusy = busy.filter((entry) => entry.startsAt < dayEnd && entry.endsAt > dayStart);
+    const weekday = clinicWeekday(isoDate);
+
+    return practitionerIds.some((practitionerId) => {
+      const open = windows.filter(
+        (window) => window.practitionerId === practitionerId && window.weekday === weekday,
+      );
+      if (open.length === 0) return false;
+      return (
+        bookableSlots({
+          isoDate,
+          minutes: appointmentType.minutes,
+          phases: activePhases(appointmentType),
+          windows: open,
+          practitionerId,
+          rooms,
+          busy: dayBusy,
+          closures: closures.filter(
+            (closure) =>
+              (closure.practitionerId === null || closure.practitionerId === practitionerId) &&
+              closure.startsAt < dayEnd &&
+              closure.endsAt > dayStart,
+          ),
+          now,
+          minNoticeMinutes: query.minNoticeMinutes ?? 0,
+          policy,
+          ignoreAppointmentId: query.ignoreAppointmentId,
+        }).length > 0
+      );
+    });
+  });
 }
 
 /// One entry per distinct start time, with a practitioner attached. This is what a patient

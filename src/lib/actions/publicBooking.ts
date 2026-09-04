@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { recordAudit } from '@/lib/audit';
 import { notifyAppointment } from '@/lib/email/notifications';
-import { distinctStarts, getAvailableSlots } from '@/lib/scheduling/availability';
+import { distinctStarts, getAvailableSlots, getOpenDays } from '@/lib/scheduling/availability';
 import { bookAppointment } from '@/lib/scheduling/booking';
 import { schedulingSettings } from '@/lib/scheduling/policy';
 import { clinicIsoDate } from '@/lib/scheduling/time';
@@ -87,6 +87,30 @@ export async function publicOpenSlots(
     minNoticeMinutes: settings.selfBookingNoticeMinutes,
   });
   return distinctStarts(slots).map((slot) => slot.startsAt.toISOString());
+}
+
+/// The days the website's calendar may offer. Same disclosure as the slot list — whether
+/// anything is free, and nothing about what is not.
+export async function publicOpenDays(
+  practitionerId: string,
+  appointmentTypeId: string,
+  from: string,
+  to: string,
+): Promise<string[]> {
+  const appointmentType = await prisma.appointmentType.findFirst({
+    where: { id: appointmentTypeId, active: true, publiclyBookable: true, firstVisit: true },
+    select: { id: true },
+  });
+  if (!appointmentType) return [];
+
+  const settings = await schedulingSettings();
+  return getOpenDays({
+    practitionerId: practitionerId || null,
+    appointmentTypeId: appointmentType.id,
+    from,
+    to,
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
+  });
 }
 
 export async function requestPublicBooking(formData: FormData): Promise<PublicBookingState> {
