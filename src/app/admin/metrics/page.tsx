@@ -38,7 +38,7 @@ function Metric({
       <p className="mt-1 text-2xl font-semibold tracking-tight">{value}</p>
       <p className="mt-1 text-sm text-clay-600">{detail}</p>
       {estimate ? (
-        <p className="mt-2 text-xs text-amber-700">Estimate, from the clinic&rsquo;s own figures</p>
+        <p className="mt-2 text-xs text-clay-500">Estimate, from the clinic&rsquo;s own figures</p>
       ) : null}
     </div>
   );
