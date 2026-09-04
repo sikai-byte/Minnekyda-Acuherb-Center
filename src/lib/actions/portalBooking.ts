@@ -6,7 +6,7 @@ import { prisma } from '@/lib/db';
 import { requirePatient } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
 import { notifyAppointment, notifyRescheduled } from '@/lib/email/notifications';
-import { distinctStarts, getAvailableSlots } from '@/lib/scheduling/availability';
+import { distinctStarts, getAvailableSlots, getOpenDays } from '@/lib/scheduling/availability';
 import { applyLifecycle, bookAppointment, rescheduleAppointment } from '@/lib/scheduling/booking';
 import { schedulingSettings } from '@/lib/scheduling/policy';
 import { clinicIsoDate } from '@/lib/scheduling/time';
@@ -45,6 +45,25 @@ export async function portalOpenSlots(
   /// practitioner a time happens to be free is none of a patient's business — and the count of
   /// rooms left at 3pm would be a fact about other patients.
   return distinctStarts(slots).map((slot) => slot.startsAt.toISOString());
+}
+
+/// Which days the portal calendar may offer. A day is either bookable or it is not; the
+/// patient is never told how much of it is taken.
+export async function portalOpenDays(
+  practitionerId: string,
+  appointmentTypeId: string,
+  from: string,
+  to: string,
+): Promise<string[]> {
+  await requirePatient();
+  const settings = await schedulingSettings();
+  return getOpenDays({
+    practitionerId: practitionerId || null,
+    appointmentTypeId,
+    from,
+    to,
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
+  });
 }
 
 export async function portalBook(formData: FormData): Promise<PortalBookingState> {
@@ -143,6 +162,27 @@ export async function portalRescheduleSlots(
     ignoreAppointmentId: appointment.id,
   });
   return distinctStarts(slots).map((slot) => slot.startsAt.toISOString());
+}
+
+export async function portalRescheduleOpenDays(
+  appointmentId: string,
+  from: string,
+  to: string,
+): Promise<string[]> {
+  const { patientId } = await requirePatient();
+  const appointment = await movableAppointment(appointmentId, patientId);
+  if (!appointment) return [];
+
+  const settings = await schedulingSettings();
+  return getOpenDays({
+    practitionerId: appointment.practitionerId,
+    appointmentTypeId: appointment.appointmentTypeId,
+    from,
+    to,
+    minNoticeMinutes: settings.selfBookingNoticeMinutes,
+    /// Its own time does not make its own reschedule look full.
+    ignoreAppointmentId: appointment.id,
+  });
 }
 
 /// Moving a visit is the patient's to do up to the clinic's notice period — 48 hours — because

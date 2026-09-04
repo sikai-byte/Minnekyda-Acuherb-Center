@@ -8,8 +8,15 @@ import {
   rescheduleAppointment,
   type Actor,
 } from './booking';
-import { appointmentsOn, busyOn, getAvailableSlots } from './availability';
-import { addDays, clinicIsoDate, clinicTimeToUtc, clinicWeekday } from './time';
+import { appointmentsOn, busyOn, getAvailableSlots, getOpenDays } from './availability';
+import {
+  addDays,
+  clinicDayEnd,
+  clinicDayStart,
+  clinicIsoDate,
+  clinicTimeToUtc,
+  clinicWeekday,
+} from './time';
 
 /// Booking against a real Postgres, because the properties that matter most here are
 /// properties of the database: the advisory lock that stops two people taking the last room,
@@ -946,6 +953,91 @@ describe('getAvailableSlots', () => {
         ['appointmentId', 'endsAt', 'phases', 'practitionerId', 'roomId', 'startsAt'].sort(),
       );
     }
+  });
+});
+
+describe('getOpenDays', () => {
+  const week = () =>
+    getOpenDays({
+      practitionerId: fx.practitionerId,
+      appointmentTypeId: fx.treatmentTypeId,
+      from: DAY,
+      to: addDays(DAY, 6),
+    });
+
+  it('names the days the practitioner works and no others', async () => {
+    expect(await week()).toEqual([
+      DAY,
+      addDays(DAY, 1),
+      addDays(DAY, 2),
+      addDays(DAY, 3),
+      addDays(DAY, 4),
+    ]);
+  });
+
+  it('drops a day the practitioner is entirely away', async () => {
+    await prisma.clinicClosure.create({
+      data: {
+        practitionerId: fx.practitionerId,
+        startsAt: clinicDayStart(addDays(DAY, 2)),
+        endsAt: clinicDayEnd(addDays(DAY, 2)),
+        label: TAG,
+      },
+    });
+    expect(await week()).not.toContain(addDays(DAY, 2));
+  });
+
+  it('keeps a day that still has one time left', async () => {
+    await book();
+    expect(await week()).toContain(DAY);
+  });
+
+  it('offers a day back to the appointment being moved off it', async () => {
+    await prisma.clinicClosure.create({
+      data: {
+        practitionerId: fx.practitionerId,
+        startsAt: clinicDayStart(addDays(DAY, 1)),
+        endsAt: clinicDayEnd(addDays(DAY, 1)),
+        label: TAG,
+      },
+    });
+    const created = await book();
+    if (!created.ok) throw new Error('booking failed');
+    const days = await getOpenDays({
+      practitionerId: fx.practitionerId,
+      appointmentTypeId: fx.treatmentTypeId,
+      from: DAY,
+      to: addDays(DAY, 6),
+      ignoreAppointmentId: created.appointmentId,
+    });
+    expect(days).toContain(DAY);
+    expect(days).not.toContain(addDays(DAY, 1));
+  });
+
+  it('clips the range to today and to the booking horizon', async () => {
+    const today = clinicIsoDate(new Date());
+    const days = await getOpenDays({
+      practitionerId: fx.practitionerId,
+      appointmentTypeId: fx.treatmentTypeId,
+      from: addDays(today, -30),
+      to: addDays(today, 400),
+    });
+    for (const day of days) {
+      expect(day >= today).toBe(true);
+      expect(day <= addDays(today, 60)).toBe(true);
+    }
+  });
+
+  it('answers nothing for a malformed range, a backwards range or a retired type', async () => {
+    const base = {
+      practitionerId: fx.practitionerId,
+      appointmentTypeId: fx.treatmentTypeId,
+      from: DAY,
+      to: addDays(DAY, 6),
+    };
+    expect(await getOpenDays({ ...base, from: 'next week' })).toEqual([]);
+    expect(await getOpenDays({ ...base, from: addDays(DAY, 6), to: DAY })).toEqual([]);
+    expect(await getOpenDays({ ...base, appointmentTypeId: fx.retiredTypeId })).toEqual([]);
   });
 });
 

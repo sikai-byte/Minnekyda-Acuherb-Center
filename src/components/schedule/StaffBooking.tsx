@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 import { SlotPicker, type PickerAppointmentType, type PickerPractitioner } from './SlotPicker';
-import { bookForPatient, staffOpenSlots } from '@/lib/actions/appointments';
+import { bookForPatient, staffOpenDays, staffOpenSlots } from '@/lib/actions/appointments';
 
 export function StaffBooking({
   patientId,
@@ -22,6 +22,7 @@ export function StaffBooking({
       appointmentTypes={appointmentTypes}
       practitioners={practitioners}
       loadSlots={staffOpenSlots}
+      loadOpenDays={staffOpenDays}
       submit={bookForPatient}
       submitLabel="Book"
       horizonDays={horizonDays}

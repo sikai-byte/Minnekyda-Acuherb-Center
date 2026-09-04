@@ -1,7 +1,9 @@
 'use client';
 
-import { useEffect, useMemo, useState, useTransition } from 'react';
+import { useCallback, useEffect, useMemo, useState, useTransition } from 'react';
 import { CLINIC_TIME_ZONE } from '@/lib/scheduling/time';
+import { groupSlotsByPeriod, monthOf, monthRange } from '@/lib/scheduling/calendar';
+import { MonthCalendar } from './MonthCalendar';
 
 /// The one booking control, shared by the front desk, the patient portal and the public
 /// website. Each caller passes its own loader and its own submit action, and the open times
@@ -26,6 +28,14 @@ type SlotPickerProps = {
     practitionerId: string,
     appointmentTypeId: string,
     date: string,
+  ) => Promise<string[]>;
+  /// Returns the days in a range that have any open time, so the calendar can grey out the
+  /// rest. Same server rules as `loadSlots`; the browser decides nothing.
+  loadOpenDays: (
+    practitionerId: string,
+    appointmentTypeId: string,
+    from: string,
+    to: string,
   ) => Promise<string[]>;
   submit: (formData: FormData) => Promise<{ error?: string }>;
   submitLabel: string;
@@ -58,10 +68,22 @@ function clinicDay(at: Date): string {
   return DATE_PARTS.format(at);
 }
 
+const DAY_LABEL = new Intl.DateTimeFormat('en-US', {
+  weekday: 'long',
+  month: 'long',
+  day: 'numeric',
+  timeZone: 'UTC',
+});
+
+function dayLabel(isoDate: string): string {
+  return DAY_LABEL.format(new Date(`${isoDate}T00:00:00Z`));
+}
+
 export function SlotPicker({
   appointmentTypes,
   practitioners,
   loadSlots,
+  loadOpenDays,
   submit,
   submitLabel,
   children,
@@ -79,11 +101,35 @@ export function SlotPicker({
     [horizonDays],
   );
   const [date, setDate] = useState(today);
+  const [month, setMonth] = useState(() => monthOf(today));
+  const [openDays, setOpenDays] = useState<string[] | null>(null);
   const [slots, setSlots] = useState<string[] | null>(null);
   const [chosen, setChosen] = useState('');
   const [error, setError] = useState<string | undefined>();
   const [loading, setLoading] = useState(false);
   const [pending, startTransition] = useTransition();
+
+  /// The month's open days, refetched whenever the question changes: a 75-minute first visit
+  /// and a 60-minute treatment do not have the same days free.
+  useEffect(() => {
+    if (!appointmentTypeId) return;
+    let current = true;
+    setOpenDays(null);
+    const range = monthRange(month, today, latest);
+    if (!range) {
+      setOpenDays([]);
+      return;
+    }
+    loadOpenDays(practitionerId, appointmentTypeId, range.from, range.to).then((days) => {
+      if (!current) return;
+      setOpenDays(days);
+      /// Land on a day that can actually be booked rather than on a closed Sunday.
+      setDate((day) => (days.length === 0 || days.includes(day) ? day : days[0]));
+    });
+    return () => {
+      current = false;
+    };
+  }, [loadOpenDays, practitionerId, appointmentTypeId, month, today, latest]);
 
   useEffect(() => {
     if (!appointmentTypeId || !date) return;
@@ -103,6 +149,13 @@ export function SlotPicker({
   }, [loadSlots, practitionerId, appointmentTypeId, date]);
 
   const appointmentType = appointmentTypes.find((option) => option.id === appointmentTypeId);
+
+  const grouped = useMemo(() => (slots ? groupSlotsByPeriod(slots) : []), [slots]);
+
+  const chooseDay = useCallback((isoDate: string) => {
+    setDate(isoDate);
+    setError(undefined);
+  }, []);
 
   const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -131,7 +184,7 @@ export function SlotPicker({
       <input type="hidden" name="practitionerId" value={practitionerId} />
       <input type="hidden" name="startsAt" value={chosen} />
 
-      <div className="grid gap-4 sm:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2">
         <label className="block">
           <span className="label">Visit type</span>
           <select
@@ -162,52 +215,63 @@ export function SlotPicker({
             ))}
           </select>
         </label>
-        <label className="block">
-          <span className="label">Day</span>
-          <input
-            type="date"
-            className="input"
-            value={date}
-            min={today}
-            max={latest}
-            onChange={(event) => setDate(event.target.value)}
-          />
-        </label>
       </div>
 
       {appointmentType?.description ? (
         <p className="text-sm text-clay-600">{appointmentType.description}</p>
       ) : null}
 
-      <div>
-        <span className="label">Open times</span>
-        {loading ? (
-          <p className="text-sm text-clay-600">Looking…</p>
-        ) : slots && slots.length > 0 ? (
-          <div className="mt-1 flex flex-wrap gap-2">
-            {slots.map((slot) => (
-              <button
-                key={slot}
-                type="button"
-                onClick={() => {
-                  setChosen(slot);
-                  setError(undefined);
-                }}
-                className={`min-h-11 rounded-lg border px-4 py-2 text-sm ${
-                  chosen === slot
-                    ? 'border-moss-600 bg-moss-600 text-white'
-                    : 'border-clay-300 bg-white text-clay-800 hover:border-moss-400'
-                }`}
-              >
-                {TIME_FORMAT.format(new Date(slot))}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-clay-600">
-            Nothing open that day. Try another, or call the clinic.
-          </p>
-        )}
+      <div className="grid gap-4 md:grid-cols-2">
+        <div>
+          <span className="label">Pick a day</span>
+          <MonthCalendar
+            month={month}
+            value={date}
+            openDays={openDays}
+            min={today}
+            max={latest}
+            onSelect={chooseDay}
+            onMonthChange={setMonth}
+          />
+        </div>
+
+        <div>
+          <span className="label">{dayLabel(date)}</span>
+          {loading ? (
+            <p className="text-sm text-clay-600">Looking…</p>
+          ) : grouped.length > 0 ? (
+            <div className="space-y-3">
+              {grouped.map((period) => (
+                <div key={period.label}>
+                  <p className="text-xs uppercase tracking-wide text-clay-500">{period.label}</p>
+                  <div className="mt-1 grid grid-cols-3 gap-2 sm:grid-cols-4 md:grid-cols-3">
+                    {period.slots.map((slot) => (
+                      <button
+                        key={slot}
+                        type="button"
+                        onClick={() => {
+                          setChosen(slot);
+                          setError(undefined);
+                        }}
+                        className={`min-h-11 rounded-lg border px-2 py-2 text-sm ${
+                          chosen === slot
+                            ? 'border-moss-600 bg-moss-600 text-white'
+                            : 'border-clay-300 bg-white text-clay-800 hover:border-moss-400'
+                        }`}
+                      >
+                        {TIME_FORMAT.format(new Date(slot))}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-clay-600">
+              Nothing open that day. Pick another, or call the clinic.
+            </p>
+          )}
+        </div>
       </div>
 
       {children}
