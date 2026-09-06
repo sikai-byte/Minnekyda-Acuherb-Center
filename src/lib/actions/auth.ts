@@ -23,6 +23,7 @@ import {
   verifyTotp,
 } from '@/lib/mfa';
 import { decryptSecret, encryptSecret, isEncrypted } from '@/lib/secretBox';
+import { staffMfaRequired } from '@/lib/mfaPolicy';
 
 const loginSchema = z.object({
   email: z.string().email('Enter a valid email'),
@@ -71,6 +72,19 @@ export async function login(_prev: FormState, formData: FormData): Promise<FormS
   /// phoning the front desk. Staff MFA stays mandatory.
   if (user.role === 'PATIENT') {
     await recordAttempt({ email, ip, success: true, reason: 'patient_password' });
+    await completeLogin(user);
+  }
+
+  /// Synthetic pilot only: the password alone mints the session, and the bypass is audited
+  /// so the history shows which sign-ins had no second factor behind them.
+  if (!staffMfaRequired()) {
+    await recordAttempt({ email, ip, success: true, reason: 'password_mfa_disabled' });
+    await recordAudit({
+      userId: user.id,
+      action: 'login_without_mfa',
+      entity: 'User',
+      entityId: user.id,
+    });
     await completeLogin(user);
   }
 
