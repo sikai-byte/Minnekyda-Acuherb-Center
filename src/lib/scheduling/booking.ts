@@ -526,7 +526,15 @@ const LIFECYCLE: Record<
 };
 
 export type LifecycleResult =
-  | { ok: true; status: AppointmentStatus; patientId: string; minutes: number | null }
+  | {
+      ok: true;
+      status: AppointmentStatus;
+      patientId: string;
+      minutes: number | null;
+      /// False when the appointment was already in the target status, so a second tap on
+      /// "cancel" neither re-records the change nor emails the patient again.
+      changed: boolean;
+    }
   | BookingFailure;
 
 /// The transitions the front desk performs all day. Legal predecessors are declared rather

@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache';
 import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { recordAudit } from '@/lib/audit';
+import { notifyAppointment } from '@/lib/email/notifications';
 import { distinctStarts, getAvailableSlots } from '@/lib/scheduling/availability';
 import { bookAppointment } from '@/lib/scheduling/booking';
 import { schedulingSettings } from '@/lib/scheduling/policy';
@@ -181,6 +182,14 @@ export async function requestPublicBooking(formData: FormData): Promise<PublicBo
     patientId: patient.id,
     detail: { source: 'PUBLIC', startsAt: result.startsAt.toISOString() },
   });
+
+  /// The website's only follow-up. Auto-confirmed bookings get a confirmation; when the clinic
+  /// confirms by hand the visitor is told their time is held, so the email says the same thing
+  /// the screen does rather than promising an appointment the front desk has not looked at.
+  await notifyAppointment(
+    result.appointmentId,
+    settings.publicRequestsAutoConfirm ? 'APPOINTMENT_BOOKED' : 'APPOINTMENT_REQUESTED',
+  );
 
   revalidatePath('/schedule');
   /// A short reference, not the row id: the confirmation screen is public.

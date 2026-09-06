@@ -5,15 +5,21 @@ import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import type { Role } from '@prisma/client';
 import { prisma } from '@/lib/db';
-import { requireRole } from '@/lib/auth';
+import { SIGN_IN_AGAIN, roleOrRefusal } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { notifyStaffInvite } from '@/lib/email/notifications';
 import { temporaryPassword } from '@/lib/tempPassword';
 
 export type StaffActionState = {
   error?: string;
   message?: string;
-  /// Read to the staff member once, on screen. Never stored in the clear, never emailed.
+  /// Shown to the admin once, on screen, and never stored in the clear. It is also emailed to
+  /// the new staff member — see `emailed` — but it stays on screen so an admin standing next to
+  /// them, or an email that does not arrive, does not lock anybody out.
   temporaryPassword?: string;
+  /// Whether the invitation actually left the building, so the screen never claims a delivery
+  /// that failed or that no mail provider is configured for.
+  emailed?: boolean;
 };
 
 /// A patient's login is issued from their chart and is bound to their record, so it is not
@@ -41,7 +47,8 @@ async function staffAccount(userId: string) {
 }
 
 export async function createStaffAccount(formData: FormData): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
 
   const parsed = newStaffSchema.safeParse({
     email: formData.get('email'),
@@ -73,13 +80,24 @@ export async function createStaffAccount(formData: FormData): Promise<StaffActio
     detail: { role: created.role },
   });
 
+  const invite = await notifyStaffInvite({
+    name: created.name,
+    email: created.email,
+    temporaryPassword: password,
+  });
+
   revalidatePath('/admin/staff');
-  return { temporaryPassword: password, message: `${created.name} can now sign in.` };
+  return {
+    temporaryPassword: password,
+    emailed: invite.status === 'SENT',
+    message: `${created.name} can now sign in.`,
+  };
 }
 
 /// Puts the account back to a one-time password that must be changed on the next sign-in.
 export async function resetStaffPassword(userId: string): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
 
@@ -96,14 +114,25 @@ export async function resetStaffPassword(userId: string): Promise<StaffActionSta
     entityId: user.id,
   });
 
+  const invite = await notifyStaffInvite({
+    name: user.name,
+    email: user.email,
+    temporaryPassword: password,
+  });
+
   revalidatePath('/admin/staff');
-  return { temporaryPassword: password, message: `New one-time password for ${user.name}.` };
+  return {
+    temporaryPassword: password,
+    emailed: invite.status === 'SENT',
+    message: `New one-time password for ${user.name}.`,
+  };
 }
 
 /// For a lost or replaced phone: clearing the enrolment lets the next sign-in set up a new
 /// authenticator, and it invalidates the old secret and every unused recovery code.
 export async function resetStaffMfa(userId: string): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
 
@@ -129,7 +158,8 @@ export async function setStaffActive(
   userId: string,
   active: boolean,
 ): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
   /// Deactivating yourself would leave nobody able to turn the account back on.
@@ -154,7 +184,8 @@ export async function setStaffActive(
 }
 
 export async function changeStaffRole(userId: string, role: Role): Promise<StaffActionState> {
-  const admin = await requireRole(['ADMIN']);
+  const admin = await roleOrRefusal(['ADMIN']);
+  if (!admin) return { error: SIGN_IN_AGAIN };
   const user = await staffAccount(userId);
   if (!user) return { error: 'Staff account not found' };
   if (!STAFF_ROLES.includes(role as (typeof STAFF_ROLES)[number])) {

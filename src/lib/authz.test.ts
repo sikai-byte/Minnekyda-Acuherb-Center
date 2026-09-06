@@ -10,7 +10,9 @@ const SRC = path.join(__dirname, '..');
 const APP = path.join(SRC, 'app');
 const ACTIONS = path.join(SRC, 'lib', 'actions');
 
-const GUARDS = /require(User|Role|IntakeAccess|UserPendingPasswordChange|Patient)\s*\(/;
+/// `roleOrRefusal` is the action-side form of `requireRole`: same check, but it returns a
+/// refusal the screen can render instead of redirecting out of a server action.
+const GUARDS = /(require(User|Role|IntakeAccess|UserPendingPasswordChange|Patient)|roleOrRefusal)\s*\(/;
 
 /// Only these may render without a session, and each is either a sign-in step or a
 /// pre-authentication screen that reads no patient data.

@@ -44,6 +44,19 @@ export async function requireRole(roles: Role[]): Promise<SessionUser> {
   return user;
 }
 
+export const SIGN_IN_AGAIN =
+  'Your sign-in no longer allows this. Sign in again, then try it once more.';
+
+/// The same check as `requireRole`, for actions submitted from a screen that was rendered
+/// under a session which has since changed or expired. Those run outside a navigation, where
+/// a redirect surfaces as a generic error page, so the caller renders `SIGN_IN_AGAIN` instead.
+/// The refusal is the point: nothing is written either way.
+export async function roleOrRefusal(roles: Role[]): Promise<SessionUser | null> {
+  const user = await currentUser();
+  if (!user || user.mustChangePassword) return null;
+  return roles.includes(user.role) ? user : null;
+}
+
 /// Only clinicians may read or write clinical notes; front desk staff are limited to
 /// demographics and intake paperwork.
 export const CLINICAL_ROLES: Role[] = ['ADMIN', 'PRACTITIONER'];
