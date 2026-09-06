@@ -18,9 +18,9 @@ const STAFF = [
   { email: 'admin@minnekyda.test', name: 'Clinic Admin', role: 'ADMIN' as const, credentials: null },
   {
     email: 'practitioner@minnekyda.test',
-    name: 'Dr. Wei Chen',
+    name: 'Dr. Yulian Yang',
     role: 'PRACTITIONER' as const,
-    credentials: 'L.Ac., Dipl. O.M.',
+    credentials: 'LAc, DAOM',
   },
   { email: 'frontdesk@minnekyda.test', name: 'Front Desk', role: 'FRONT_DESK' as const, credentials: null },
 ];

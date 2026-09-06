@@ -5,13 +5,18 @@ import bcrypt from 'bcryptjs';
 import { prisma } from '@/lib/db';
 import { requireUser } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { notifyPortalInvite } from '@/lib/email/notifications';
 import { temporaryPassword } from '@/lib/tempPassword';
 
 export type PortalAccessState = {
   error?: string;
-  /// Shown to staff once, on screen, so they can read it to the patient. It is never
-  /// stored in the clear and never emailed from here.
+  /// Shown to staff once, on screen, so they can read it to the patient, and emailed to the
+  /// patient as well — the address is their username, so it is already known good enough to be
+  /// the login. Never stored in the clear, single-use, and useless without being changed.
   temporaryPassword?: string;
+  /// Whether the invitation actually left the building, so the chart never claims a delivery
+  /// that failed or that no mail provider is configured for.
+  emailed?: boolean;
   message?: string;
 };
 
@@ -75,8 +80,15 @@ export async function grantPortalAccess(patientId: string): Promise<PortalAccess
     patientId,
   });
 
+  const invite = await notifyPortalInvite({
+    patientId,
+    firstName: patient.firstName,
+    email,
+    temporaryPassword: password,
+  });
+
   revalidatePath(`/patients/${patientId}`);
-  return { temporaryPassword: password };
+  return { temporaryPassword: password, emailed: invite.status === 'SENT' };
 }
 
 export async function revokePortalAccess(patientId: string): Promise<PortalAccessState> {

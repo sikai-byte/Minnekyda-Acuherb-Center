@@ -264,6 +264,9 @@ model Appointment {
   completedAt       DateTime?
   cancelledAt       DateTime?
   noShowAt          DateTime?
+  /// Set once a reminder has gone out, so a reminder run that happens twice — a retried cron,
+  /// two hosts — does not email the patient twice.
+  reminderSentAt    DateTime?
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
@@ -461,6 +464,46 @@ model ClinicalNote {
 
   @@index([patientId, visitDate])
   @@index([appointmentId])
+}
+
+enum EmailKind {
+  APPOINTMENT_BOOKED
+  APPOINTMENT_REQUESTED
+  APPOINTMENT_CONFIRMED
+  APPOINTMENT_RESCHEDULED
+  APPOINTMENT_CANCELLED
+  APPOINTMENT_REMINDER
+  PORTAL_INVITE
+  STAFF_INVITE
+}
+
+enum EmailStatus {
+  SENT
+  SKIPPED
+  FAILED
+}
+
+/// One row per email the clinic tried to send. It records that a message of a given kind went
+/// to an address at a time — never the body, so the log cannot become a second copy of the
+/// clinic's correspondence, and never anything clinical, which the emails do not carry either.
+///
+/// It exists so the front desk can answer "did they get the confirmation?" without logging in
+/// to the mail provider, and so a delivery failure is visible rather than silent.
+model EmailMessage {
+  id            String      @id @default(cuid())
+  kind          EmailKind
+  to            String
+  status        EmailStatus
+  /// The provider's message id, for tracing a specific delivery with them.
+  providerId    String?
+  error         String?
+  patientId     String?
+  appointmentId String?
+  createdAt     DateTime    @default(now())
+
+  @@index([appointmentId, kind])
+  @@index([patientId, createdAt])
+  @@index([createdAt])
 }
 
 /// Every read and write of patient data is recorded. Required for HIPAA audit controls.

@@ -20,6 +20,9 @@ export function NewStaffForm() {
             <p className="mt-1 text-sm text-clay-600">
               It is not shown again. They must change it and set up an authenticator app the
               first time they sign in.
+              {state.emailed
+                ? ' We have also emailed it to them.'
+                : ' Email is not going out, so pass it on yourself.'}
             </p>
             <button
               type="button"

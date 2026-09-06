@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { prisma } from '@/lib/db';
 import { requirePatient } from '@/lib/auth';
 import { recordAudit } from '@/lib/audit';
+import { notifyAppointment, notifyRescheduled } from '@/lib/email/notifications';
 import { distinctStarts, getAvailableSlots } from '@/lib/scheduling/availability';
 import { applyLifecycle, bookAppointment, rescheduleAppointment } from '@/lib/scheduling/booking';
 import { schedulingSettings } from '@/lib/scheduling/policy';
@@ -101,6 +102,8 @@ export async function portalBook(formData: FormData): Promise<PortalBookingState
     detail: { source: 'PORTAL', startsAt: result.startsAt.toISOString() },
   });
 
+  await notifyAppointment(result.appointmentId, 'APPOINTMENT_BOOKED');
+
   revalidatePath('/portal/appointments');
   revalidatePath('/schedule');
   return { confirmed: result.appointmentId };
@@ -178,6 +181,10 @@ export async function portalReschedule(formData: FormData): Promise<PortalBookin
     detail: { source: 'PORTAL', startsAt: result.startsAt.toISOString() },
   });
 
+  /// The patient moved it themselves, so this is a receipt rather than news — and the one
+  /// record they have of the old time and the new one.
+  await notifyRescheduled(appointment.id, appointment.startsAt);
+
   revalidatePath('/portal/appointments');
   revalidatePath('/schedule');
   return { confirmed: appointment.id };
@@ -237,6 +244,8 @@ export async function portalCancel(appointmentId: string): Promise<PortalBooking
     patientId,
     detail: { source: 'PORTAL' },
   });
+
+  await notifyAppointment(appointment.id, 'APPOINTMENT_CANCELLED');
 
   revalidatePath('/portal/appointments');
   revalidatePath('/schedule');
